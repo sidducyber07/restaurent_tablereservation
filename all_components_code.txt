@@ -1,0 +1,2539 @@
+================================================================================
+// FILE: src/store/index.js
+================================================================================
+
+import { configureStore } from "@reduxjs/toolkit";
+import reservationReducer from "./reservationSlice.js";
+import { reservationActionMonitorMiddleware, storageSyncMiddleware } from "./middleware.js";
+
+export const store = configureStore({
+  reducer: {
+    reservation: reservationReducer
+  },
+  middleware: (getDefaultMiddleware) =>
+    getDefaultMiddleware({
+      serializableCheck: false
+    }).concat(reservationActionMonitorMiddleware, storageSyncMiddleware)
+});
+
+export default store;
+
+
+================================================================================
+// FILE: src/store/reservationSlice.js
+================================================================================
+
+import { createSlice } from "@reduxjs/toolkit";
+import { STORAGE_KEY } from "./middleware.js";
+
+const loadStoredReservations = () => {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch (err) {
+    console.error("Failed to load reservations from localStorage:", err);
+    return [];
+  }
+};
+
+const initialState = {
+  selectedRestaurant: null,
+  draft: {
+    date: new Date().toISOString().split("T")[0],
+    timeSlot: "",
+    guests: 2,
+    selectedTable: null,
+    customerName: "",
+    customerEmail: "",
+    customerPhone: "",
+    specialRequests: ""
+  },
+  confirmedReservations: loadStoredReservations(),
+  actionLogs: [],
+  isLoading: false,
+  error: null
+};
+
+export const reservationSlice = createSlice({
+  name: "reservation",
+  initialState,
+  reducers: {
+    setSelectedRestaurant: (state, action) => {
+      state.selectedRestaurant = action.payload;
+    },
+
+    updateDraft: (state, action) => {
+      state.draft = { ...state.draft, ...action.payload };
+    },
+
+    resetDraft: (state) => {
+      state.draft = {
+        date: new Date().toISOString().split("T")[0],
+        timeSlot: "",
+        guests: 2,
+        selectedTable: null,
+        customerName: "",
+        customerEmail: "",
+        customerPhone: "",
+        specialRequests: ""
+      };
+      state.error = null;
+    },
+
+    // Set full list from GET /api/reservations
+    setConfirmedReservations: (state, action) => {
+      state.confirmedReservations = action.payload;
+      state.isLoading = false;
+      state.error = null;
+    },
+
+    // POST /api/reservations
+    confirmReservation: (state, action) => {
+      state.confirmedReservations.unshift(action.payload);
+      state.isLoading = false;
+      state.error = null;
+    },
+
+    // PUT /api/reservations/:id
+    updateReservationInState: (state, action) => {
+      const index = state.confirmedReservations.findIndex(r => r.id === action.payload.id);
+      if (index !== -1) {
+        state.confirmedReservations[index] = { ...state.confirmedReservations[index], ...action.payload };
+      }
+      state.isLoading = false;
+    },
+
+    // DELETE /api/reservations/:id
+    cancelReservation: (state, action) => {
+      state.confirmedReservations = state.confirmedReservations.filter(
+        (r) => r.id !== action.payload
+      );
+    },
+
+    clearAllReservations: (state) => {
+      state.confirmedReservations = [];
+    },
+
+    addLogEntry: (state, action) => {
+      state.actionLogs.unshift(action.payload);
+      if (state.actionLogs.length > 25) {
+        state.actionLogs.pop();
+      }
+    },
+
+    setLoading: (state, action) => {
+      state.isLoading = action.payload;
+    },
+
+    setError: (state, action) => {
+      state.error = action.payload;
+      state.isLoading = false;
+    }
+  }
+});
+
+export const {
+  setSelectedRestaurant,
+  updateDraft,
+  resetDraft,
+  setConfirmedReservations,
+  confirmReservation,
+  updateReservationInState,
+  cancelReservation,
+  clearAllReservations,
+  addLogEntry,
+  setLoading,
+  setError
+} = reservationSlice.actions;
+
+export default reservationSlice.reducer;
+
+
+================================================================================
+// FILE: src/store/middleware.js
+================================================================================
+
+/**
+ * Custom Redux Middleware:
+ * 1. reservationActionMonitorMiddleware: Monitors & audits reservation actions in real-time
+ * 2. storageSyncMiddleware: Synchronizes reservations state with localStorage
+ */
+
+export const STORAGE_KEY = "gourmet_reservations";
+
+export const reservationActionMonitorMiddleware = (store) => (next) => (action) => {
+  if (typeof action?.type === "string" && action.type.startsWith("reservation/")) {
+    const timestamp = new Date().toLocaleTimeString();
+    console.log(
+      `%c[Redux Middleware @ ${timestamp}] %c${action.type}`,
+      "color: #ea580c; font-weight: bold;",
+      "color: #2563eb; font-weight: 600;",
+      action.payload !== undefined ? action.payload : ""
+    );
+
+    // Prevent recursive loop if action is the logger action itself
+    if (action.type !== "reservation/addLogEntry") {
+      setTimeout(() => {
+        store.dispatch({
+          type: "reservation/addLogEntry",
+          payload: {
+            id: `log_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+            type: action.type,
+            time: timestamp,
+            payloadSummary: action.payload ? JSON.stringify(action.payload).slice(0, 100) : "none"
+          }
+        });
+      }, 0);
+    }
+  }
+
+  const result = next(action);
+  return result;
+};
+
+export const storageSyncMiddleware = (store) => (next) => (action) => {
+  const result = next(action);
+
+  const syncActions = [
+    "reservation/setConfirmedReservations",
+    "reservation/confirmReservation",
+    "reservation/updateReservationInState",
+    "reservation/cancelReservation",
+    "reservation/clearAllReservations"
+  ];
+
+  if (syncActions.includes(action.type)) {
+    try {
+      const state = store.getState();
+      const reservations = state.reservation?.confirmedReservations || [];
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(reservations));
+      console.log(`%c[Storage Sync Middleware] Synchronized ${reservations.length} bookings to localStorage`, "color: #16a34a; font-weight: bold;");
+    } catch (err) {
+      console.error("[Storage Sync Middleware] Failed to write to localStorage:", err);
+    }
+  }
+
+  return result;
+};
+
+
+================================================================================
+// FILE: src/services/api.js
+================================================================================
+
+import { fetchClient } from "./fetchClient.js";
+import { axiosClient } from "./axiosClient.js";
+
+let client = "axios";
+export const setClientType = (t) => { client = t; };
+export const getClientType = () => client;
+
+const getClient = (opt) => (opt?.clientType || client) === "fetch" ? fetchClient : axiosClient;
+
+// READ Operations (GET)
+export const getRestaurants = (params = {}, opt = {}) => getClient(opt).get("/restaurants", { params, ...opt });
+export const getRestaurantById = (id, opt = {}) => getClient(opt).get(`/restaurants/${id}`, opt);
+export const getRestaurantAvailability = (id, params = {}, opt = {}) => getClient(opt).get(`/restaurants/${id}/availability`, { params, ...opt });
+export const getReservations = (params = {}, opt = {}) => getClient(opt).get("/reservations", { params, ...opt });
+
+// CREATE Operation (POST)
+export const createReservation = (data, opt = {}) => getClient(opt).post("/reservations", data, opt);
+
+// UPDATE Operation (PUT)
+export const updateReservation = (id, updates, opt = {}) => getClient(opt).put(`/reservations/${id}`, updates, opt);
+
+// DELETE Operation (DELETE)
+export const deleteReservation = (id, opt = {}) => getClient(opt).delete(`/reservations/${id}`, opt);
+
+export default {
+  getRestaurants,
+  getRestaurantById,
+  getRestaurantAvailability,
+  getReservations,
+  createReservation,
+  updateReservation,
+  deleteReservation
+};
+
+
+================================================================================
+// FILE: src/services/fetchClient.js
+================================================================================
+
+/**
+ * REST API Client implementation using standard window.fetch()
+ * Supports Full CRUD: GET, POST, PUT/PATCH, and DELETE
+ */
+const BASE = "/api";
+
+export const fetchClient = {
+  async request(url, { method = "GET", params, body, signal, simulateError, simulateDelay } = {}) {
+    const q = params ? "?" + new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== "")).toString() : "";
+    const headers = {
+      "Accept": "application/json",
+      ...(body && { "Content-Type": "application/json" }),
+      ...(simulateDelay && { "x-simulate-delay": String(simulateDelay) }),
+      ...(simulateError && { "x-simulate-error": "true" })
+    };
+
+    const res = await fetch(`${BASE}${url}${q}`, {
+      method,
+      headers,
+      signal,
+      body: body ? JSON.stringify(body) : null
+    });
+
+    if (!res.ok) {
+      const err = new Error((await res.json().catch(() => ({}))).message || `HTTP Error ${res.status}`);
+      err.status = res.status;
+      err.client = "Fetch API";
+      throw err;
+    }
+
+    return { data: await res.json(), status: res.status, client: "Fetch API" };
+  },
+
+  get(url, opt) { return this.request(url, { ...opt, method: "GET" }); },
+  post(url, body, opt) { return this.request(url, { ...opt, method: "POST", body }); },
+  put(url, body, opt) { return this.request(url, { ...opt, method: "PUT", body }); },
+  delete(url, opt) { return this.request(url, { ...opt, method: "DELETE" }); }
+};
+
+
+================================================================================
+// FILE: src/services/axiosClient.js
+================================================================================
+
+/**
+ * REST API Client implementation using Axios
+ * Supports Full CRUD: GET, POST, PUT, and DELETE
+ */
+import axios from "axios";
+
+const api = axios.create({ baseURL: "/api", timeout: 10000 });
+
+const wrap = async (fn, endpoint, opt = {}, body = null) => {
+  const { params, signal, simulateError, simulateDelay } = opt;
+  const headers = {
+    ...(simulateDelay && { "x-simulate-delay": String(simulateDelay) }),
+    ...(simulateError && { "x-simulate-error": "true" })
+  };
+
+  try {
+    const res = body !== null
+      ? await fn(endpoint, body, { headers, signal })
+      : await fn(endpoint, { params, headers, signal });
+    return { data: res.data, status: res.status, client: "Axios Client" };
+  } catch (err) {
+    const e = new Error(err.response?.data?.message || err.message);
+    e.status = err.response?.status || 500;
+    e.client = "Axios Client";
+    throw e;
+  }
+};
+
+export const axiosClient = {
+  get: (u, o) => wrap(api.get, u, o),
+  post: (u, b, o) => wrap(api.post, u, o, b),
+  put: (u, b, o) => wrap(api.put, u, o, b),
+  delete: (u, o) => wrap(api.delete, u, o)
+};
+
+
+================================================================================
+// FILE: src/data/mockRestaurants.js
+================================================================================
+
+export const RESTAURANTS_DATA = [
+  {
+    id: 1,
+    name: "Bella Italia Trattoria",
+    cuisine: "Italian",
+    location: "Downtown",
+    address: "142 Elm Street, Downtown Financial District",
+    phone: "(555) 234-5678",
+    rating: 4.8,
+    reviewsCount: 420,
+    priceRange: "$$$",
+    priceLevel: 3,
+    image: "https://images.unsplash.com/photo-1555396273-367ea4eb4db5?auto=format&fit=crop&w=800&q=80",
+    description: "Authentic wood-fired Neapolitan pizzas, handcrafted pasta, and a curated Italian wine list in a warm rustic setting.",
+    tags: ["Wood-fired Pizza", "Wine Bar", "Romantic", "Outdoor Patio"],
+    openingHours: "12:00 PM - 10:30 PM",
+    tables: [
+      { id: "T1", number: 1, capacity: 2, type: "Window View", isAvailable: true },
+      { id: "T2", number: 2, capacity: 2, type: "Indoor Main Dining", isAvailable: true },
+      { id: "T3", number: 3, capacity: 4, type: "Cozy Booth", isAvailable: true },
+      { id: "T4", number: 4, capacity: 4, type: "Indoor Main Dining", isAvailable: false },
+      { id: "T5", number: 5, capacity: 6, type: "Outdoor Patio", isAvailable: true },
+      { id: "T6", number: 6, capacity: 8, type: "Private Family Table", isAvailable: true }
+    ],
+    timeSlots: [
+      "12:00 PM", "12:30 PM", "1:00 PM", "1:30 PM",
+      "5:30 PM", "6:00 PM", "6:30 PM", "7:00 PM",
+      "7:30 PM", "8:00 PM", "8:30 PM", "9:00 PM"
+    ]
+  },
+  {
+    id: 2,
+    name: "Sakura Japanese Kaiseki & Sushi",
+    cuisine: "Japanese",
+    location: "Midtown",
+    address: "580 Madison Ave, Midtown Center",
+    phone: "(555) 345-6789",
+    rating: 4.9,
+    reviewsCount: 610,
+    priceRange: "$$$$",
+    priceLevel: 4,
+    image: "https://images.unsplash.com/photo-1579871494447-9811cf80d66c?auto=format&fit=crop&w=800&q=80",
+    description: "Master-crafted omakase sushi and seasonal multi-course kaiseki dining flown in directly from Toyosu Market Tokyo.",
+    tags: ["Omakase", "Sushi Bar", "Quiet", "Chef's Table"],
+    openingHours: "5:00 PM - 11:00 PM",
+    tables: [
+      { id: "T1", number: 1, capacity: 2, type: "Sushi Bar Counter", isAvailable: true },
+      { id: "T2", number: 2, capacity: 2, type: "Sushi Bar Counter", isAvailable: true },
+      { id: "T3", number: 3, capacity: 4, type: "Tatami Room", isAvailable: true },
+      { id: "T4", number: 4, capacity: 4, type: "Indoor Main Dining", isAvailable: true },
+      { id: "T5", number: 5, capacity: 6, type: "Private Dining Suite", isAvailable: false }
+    ],
+    timeSlots: [
+      "5:00 PM", "5:30 PM", "6:00 PM", "6:30 PM",
+      "7:30 PM", "8:00 PM", "8:30 PM", "9:00 PM", "9:30 PM"
+    ]
+  },
+  {
+    id: 3,
+    name: "Spice Symphony Royale",
+    cuisine: "Indian",
+    location: "Downtown",
+    address: "210 Liberty Ave, Downtown Plaza",
+    phone: "(555) 456-7890",
+    rating: 4.7,
+    reviewsCount: 385,
+    priceRange: "$$",
+    priceLevel: 2,
+    image: "https://images.unsplash.com/photo-1585937421612-70a008356fbe?auto=format&fit=crop&w=800&q=80",
+    description: "Rich regional Indian cuisine, aromatic biryanis, clay-oven tandoor delicacies, and modern craft cocktails.",
+    tags: ["Tandoor Specialties", "Vegetarian Options", "Buffet Lunch", "Family Friendly"],
+    openingHours: "11:30 AM - 10:00 PM",
+    tables: [
+      { id: "T1", number: 101, capacity: 2, type: "Window View", isAvailable: true },
+      { id: "T2", number: 102, capacity: 4, type: "Indoor Main Dining", isAvailable: true },
+      { id: "T3", number: 103, capacity: 4, type: "Cozy Booth", isAvailable: true },
+      { id: "T4", number: 104, capacity: 6, type: "Indoor Main Dining", isAvailable: true },
+      { id: "T5", number: 105, capacity: 8, type: "Grand Banquet Table", isAvailable: true }
+    ],
+    timeSlots: [
+      "12:00 PM", "12:45 PM", "1:30 PM", "2:15 PM",
+      "6:00 PM", "6:45 PM", "7:30 PM", "8:15 PM", "9:00 PM"
+    ]
+  },
+  {
+    id: 4,
+    name: "La Petite Boucherie",
+    cuisine: "French",
+    location: "West End",
+    address: "75 Rue de Paris, West End Promenade",
+    phone: "(555) 567-8901",
+    rating: 4.6,
+    reviewsCount: 290,
+    priceRange: "$$$",
+    priceLevel: 3,
+    image: "https://images.unsplash.com/photo-1550966871-3ed3cdb5ed0c?auto=format&fit=crop&w=800&q=80",
+    description: "Classic Parisian bistro with steak frites, duck confit, fresh baguettes, and an exquisite French cellar selection.",
+    tags: ["Bistro", "Brunch", "Romantic", "Sidewalk Cafe"],
+    openingHours: "11:00 AM - 11:00 PM",
+    tables: [
+      { id: "T1", number: 11, capacity: 2, type: "Sidewalk Cafe", isAvailable: true },
+      { id: "T2", number: 12, capacity: 2, type: "Window View", isAvailable: false },
+      { id: "T3", number: 13, capacity: 4, type: "Cozy Booth", isAvailable: true },
+      { id: "T4", number: 14, capacity: 4, type: "Indoor Main Dining", isAvailable: true },
+      { id: "T5", number: 15, capacity: 6, type: "Wine Cellar Alcove", isAvailable: true }
+    ],
+    timeSlots: [
+      "11:30 AM", "12:30 PM", "1:30 PM",
+      "6:00 PM", "7:00 PM", "8:00 PM", "9:00 PM", "10:00 PM"
+    ]
+  },
+  {
+    id: 5,
+    name: "Santorini Aegean Mezze & Grill",
+    cuisine: "Mediterranean",
+    location: "Waterfront",
+    address: "88 Harbor Way, Pier Waterfront",
+    phone: "(555) 678-9012",
+    rating: 4.8,
+    reviewsCount: 540,
+    priceRange: "$$$",
+    priceLevel: 3,
+    image: "https://images.unsplash.com/photo-1544124499-58912cbddaad?auto=format&fit=crop&w=800&q=80",
+    description: "Fresh Mediterranean seafood, grilled octopus, lemon-herb lamb chops, and coastal views overlooking the bay.",
+    tags: ["Waterfront View", "Seafood", "Sunset Terrace", "Cocktail Lounge"],
+    openingHours: "12:00 PM - 11:00 PM",
+    tables: [
+      { id: "T1", number: 21, capacity: 2, type: "Harbor Terrace", isAvailable: true },
+      { id: "T2", number: 22, capacity: 2, type: "Harbor Terrace", isAvailable: true },
+      { id: "T3", number: 23, capacity: 4, type: "Rooftop Deck", isAvailable: true },
+      { id: "T4", number: 24, capacity: 4, type: "Indoor Ocean View", isAvailable: true },
+      { id: "T5", number: 25, capacity: 6, type: "Rooftop Deck", isAvailable: false },
+      { id: "T6", number: 26, capacity: 8, type: "VIP Pier Table", isAvailable: true }
+    ],
+    timeSlots: [
+      "12:30 PM", "1:30 PM", "2:30 PM",
+      "5:30 PM", "6:30 PM", "7:30 PM", "8:30 PM", "9:30 PM"
+    ]
+  },
+  {
+    id: 6,
+    name: "El Sol Mexican Cantina",
+    cuisine: "Mexican",
+    location: "Midtown",
+    address: "320 Market Street, Midtown Arts District",
+    phone: "(555) 789-0123",
+    rating: 4.5,
+    reviewsCount: 310,
+    priceRange: "$$",
+    priceLevel: 2,
+    image: "https://images.unsplash.com/photo-1504674900247-0877df9cc836?auto=format&fit=crop&w=800&q=80",
+    description: "Authentic Oaxacan mole, handmade corn tortillas, artisanal mezcal cocktails, and vibrant live acoustic music.",
+    tags: ["Live Music", "Tacos & Mezcal", "Vibrant Patio", "Late Night"],
+    openingHours: "1:00 PM - 12:00 AM",
+    tables: [
+      { id: "T1", number: 31, capacity: 2, type: "Cantina Bar Table", isAvailable: true },
+      { id: "T2", number: 32, capacity: 4, type: "Outdoor Courtyard", isAvailable: true },
+      { id: "T3", number: 33, capacity: 4, type: "Indoor Fiesta Hall", isAvailable: true },
+      { id: "T4", number: 34, capacity: 6, type: "Outdoor Courtyard", isAvailable: true },
+      { id: "T5", number: 35, capacity: 8, type: "Fiesta Lounge Table", isAvailable: true }
+    ],
+    timeSlots: [
+      "1:00 PM", "2:00 PM", "3:00 PM",
+      "6:00 PM", "7:00 PM", "8:00 PM", "9:00 PM", "10:00 PM", "11:00 PM"
+    ]
+  },
+  {
+    id: 7,
+    name: "The Prime Cut Steakhouse",
+    cuisine: "American",
+    location: "Uptown",
+    address: "910 Park Avenue, Uptown Heights",
+    phone: "(555) 890-1234",
+    rating: 4.9,
+    reviewsCount: 780,
+    priceRange: "$$$$",
+    priceLevel: 4,
+    image: "https://images.unsplash.com/photo-1544025162-d76694265947?auto=format&fit=crop&w=800&q=80",
+    description: "USDA Prime dry-aged steaks, Maine lobster tails, craft bourbons, and leather club booth seating.",
+    tags: ["Dry-aged Steak", "Bourbon Bar", "Executive Dining", "Private Rooms"],
+    openingHours: "5:00 PM - 11:00 PM",
+    tables: [
+      { id: "T1", number: 41, capacity: 2, type: "Executive Leather Booth", isAvailable: true },
+      { id: "T2", number: 42, capacity: 2, type: "Indoor Main Dining", isAvailable: false },
+      { id: "T3", number: 43, capacity: 4, type: "Executive Leather Booth", isAvailable: true },
+      { id: "T4", number: 44, capacity: 6, type: "Wine Room Table", isAvailable: true },
+      { id: "T5", number: 45, capacity: 8, type: "Presidential Dining Room", isAvailable: true }
+    ],
+    timeSlots: [
+      "5:00 PM", "5:45 PM", "6:30 PM", "7:15 PM", "8:00 PM", "8:45 PM", "9:30 PM"
+    ]
+  },
+  {
+    id: 8,
+    name: "Golden Dragon Cantonese Dim Sum",
+    cuisine: "Chinese",
+    location: "Downtown",
+    address: "45 Chinatown Walk, Downtown Chinatown",
+    phone: "(555) 901-2345",
+    rating: 4.7,
+    reviewsCount: 520,
+    priceRange: "$$",
+    priceLevel: 2,
+    image: "https://images.unsplash.com/photo-1563245372-f21724e3856d?auto=format&fit=crop&w=800&q=80",
+    description: "Traditional pushcart dim sum, Peking duck carved tableside, and fresh seafood specialties.",
+    tags: ["Dim Sum", "Peking Duck", "Large Groups", "Family Style"],
+    openingHours: "10:30 AM - 10:00 PM",
+    tables: [
+      { id: "T1", number: 51, capacity: 2, type: "Indoor Main Dining", isAvailable: true },
+      { id: "T2", number: 52, capacity: 4, type: "Indoor Main Dining", isAvailable: true },
+      { id: "T3", number: 53, capacity: 6, type: "Round Lazy Susan Table", isAvailable: true },
+      { id: "T4", number: 54, capacity: 8, type: "Round Lazy Susan Table", isAvailable: true },
+      { id: "T5", number: 55, capacity: 10, type: "VIP Dragon Room", isAvailable: false }
+    ],
+    timeSlots: [
+      "11:00 AM", "12:00 PM", "1:00 PM", "2:00 PM",
+      "5:30 PM", "6:30 PM", "7:30 PM", "8:30 PM"
+    ]
+  }
+];
+
+export const CUISINES_LIST = [
+  "All Cuisines",
+  "Italian",
+  "Japanese",
+  "Indian",
+  "French",
+  "Mediterranean",
+  "Mexican",
+  "American",
+  "Chinese"
+];
+
+export const LOCATIONS_LIST = [
+  "All Locations",
+  "Downtown",
+  "Midtown",
+  "Uptown",
+  "Waterfront",
+  "West End"
+];
+
+
+================================================================================
+// FILE: src/components/Navbar.jsx
+================================================================================
+
+import React from "react";
+import { useSelector } from "react-redux";
+import { Utensils, Zap, Clock, AlertTriangle, Layers, CalendarCheck } from "lucide-react";
+
+export function Navbar({
+  clientType,
+  onClientTypeChange,
+  simulateDelay,
+  onToggleSimulateDelay,
+  simulateError,
+  onToggleSimulateError,
+  requestStats,
+  onOpenBookings
+}) {
+  const confirmedCount = useSelector((state) => state.reservation.confirmedReservations?.length || 0);
+
+  return (
+    <header className="navbar">
+      <div className="navbar-container">
+        <div className="navbar-brand">
+          <div className="brand-icon">
+            <Utensils size={24} />
+          </div>
+          <div>
+            <div className="brand-name">GourmetReserve</div>
+            <div className="brand-subtitle">
+              Scenario 5 &bull; Exp 2: Redux Toolkit State &amp; Middleware
+            </div>
+          </div>
+        </div>
+
+        <div className="navbar-controls">
+          {/* My Bookings Button (Redux State + Storage sync) */}
+          <button
+            onClick={onOpenBookings}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "0.4rem",
+              padding: "0.45rem 0.85rem",
+              background: "var(--primary-light)",
+              border: "1.5px solid var(--primary)",
+              color: "var(--primary)",
+              borderRadius: "var(--radius-md)",
+              fontWeight: 700,
+              fontSize: "0.82rem",
+              cursor: "pointer"
+            }}
+          >
+            <CalendarCheck size={16} />
+            <span>My Bookings</span>
+            <span
+              style={{
+                background: "var(--primary)",
+                color: "white",
+                borderRadius: "9999px",
+                padding: "0.1rem 0.45rem",
+                fontSize: "0.72rem",
+                fontWeight: 800
+              }}
+            >
+              {confirmedCount}
+            </span>
+          </button>
+
+          {/* API Client Switcher (Axios vs Fetch) */}
+          <div className="client-switcher" title="Toggle between Axios and native Fetch API client">
+            <span className="control-label">
+              <Layers size={14} /> Client:
+            </span>
+            <div className="segmented-toggle">
+              <button
+                className={`toggle-btn ${clientType === "axios" ? "active" : ""}`}
+                onClick={() => onClientTypeChange("axios")}
+              >
+                <Zap size={14} />
+                Axios
+              </button>
+              <button
+                className={`toggle-btn ${clientType === "fetch" ? "active" : ""}`}
+                onClick={() => onClientTypeChange("fetch")}
+              >
+                <Zap size={14} />
+                Fetch
+              </button>
+            </div>
+          </div>
+
+          {/* Simulation Toggles */}
+          <div className="simulation-controls">
+            <button
+              className={`sim-btn ${simulateDelay ? "active-delay" : ""}`}
+              onClick={onToggleSimulateDelay}
+              title="Adds 2000ms delay to REST responses to test loading state"
+            >
+              <Clock size={14} />
+              <span>{simulateDelay ? "Delay: 2s Active" : "Simulate 2s Delay"}</span>
+            </button>
+
+            <button
+              className={`sim-btn ${simulateError ? "active-error" : ""}`}
+              onClick={onToggleSimulateError}
+              title="Forces HTTP 500 responses to test error handling & retry"
+            >
+              <AlertTriangle size={14} />
+              <span>{simulateError ? "Simulated Error ON" : "Simulate Error"}</span>
+            </button>
+          </div>
+
+          {/* Quick stats badge */}
+          {requestStats && (
+            <div className="stats-badge" title="Total completed REST calls in this session">
+              <span className="stats-dot"></span>
+              {requestStats.count} API calls &bull; {requestStats.lastClient || clientType}
+            </div>
+          )}
+        </div>
+      </div>
+    </header>
+  );
+}
+
+
+================================================================================
+// FILE: src/components/SearchFilterBar.jsx
+================================================================================
+
+import React from "react";
+import { Search, X } from "lucide-react";
+import { CUISINES_LIST, LOCATIONS_LIST } from "../data/mockRestaurants.js";
+export function SearchFilterBar({ filters, onFilterChange, onResetFilters, totalResults }) {
+  return (
+    <section className="search-filter-section"><div className="search-filter-card">
+      <div className="search-input-wrapper"><Search size={18} className="search-icon" /><input className="search-input" placeholder="Search restaurants by name, cuisine, area..." value={filters.search} onChange={e => onFilterChange("search", e.target.value)} />{filters.search && <button className="search-clear-btn" onClick={() => onFilterChange("search", "")}><X size={14} /></button>}</div>
+      <div className="filters-grid"><select className="filter-select" value={filters.cuisine} onChange={e => onFilterChange("cuisine", e.target.value)}>{CUISINES_LIST.map(c => <option key={c}>{c}</option>)}</select><select className="filter-select" value={filters.location} onChange={e => onFilterChange("location", e.target.value)}>{LOCATIONS_LIST.map(l => <option key={l}>{l}</option>)}</select></div>
+      <div className="filter-footer"><span>Found <strong>{totalResults}</strong> restaurants</span><button className="btn-reset-filters" onClick={onResetFilters}><X size={12} /> Reset</button></div>
+    </div></section>
+  );
+}
+
+
+================================================================================
+// FILE: src/components/RestaurantCard.jsx
+================================================================================
+
+import React from "react";
+import { Star, MapPin, CalendarDays } from "lucide-react";
+export function RestaurantCard({ restaurant: r, onSelectForBooking }) {
+  return (
+    <article className="restaurant-card">
+      <div className="card-image-container"><img src={r.image} alt={r.name} className="card-image" /><div className="card-badge-row"><span className="badge-cuisine">{r.cuisine}</span><span className="badge-price">{r.priceRange}</span></div></div>
+      <div className="card-content">
+        <div className="card-header-row"><h3 className="restaurant-name">{r.name}</h3><span className="rating-badge"><Star size={13} fill="#f59e0b" color="#f59e0b" /> {r.rating} ({r.reviewsCount})</span></div>
+        <div className="meta-item"><MapPin size={13} /> {r.location} &bull; {r.address}</div>
+        <p className="restaurant-desc">{r.description}</p>
+        <div className="card-footer"><span className="tables-info">{r.tables?.length || 6} Tables</span><button className="btn-reserve" onClick={() => onSelectForBooking(r)}><CalendarDays size={14} /> Reserve Table</button></div>
+      </div>
+    </article>
+  );
+}
+
+
+================================================================================
+// FILE: src/components/ReservationModal.jsx
+================================================================================
+
+import React, { useState, useEffect, useRef } from "react";
+import {
+  X,
+  Calendar,
+  Users,
+  Clock,
+  CheckCircle,
+  AlertCircle,
+  RefreshCw,
+  Armchair,
+  Sparkles,
+  Phone,
+  Mail,
+  User,
+  MessageSquare,
+  ArrowRight,
+  ArrowLeft,
+  Check
+} from "lucide-react";
+import { getRestaurantAvailability, createReservation } from "../services/api.js";
+import { useDispatch } from "react-redux";
+import { updateDraft, confirmReservation as saveToStore } from "../store/reservationSlice.js";
+
+export function ReservationModal({
+  restaurant,
+  isOpen,
+  onClose,
+  clientType,
+  simulateDelay,
+  simulateError,
+  onRequestCompleted
+}) {
+  const dispatch = useDispatch();
+  const [step, setStep] = useState(1); // 1: Select Table & Slot, 2: Guest Details, 3: Confirmation
+  const [date, setDate] = useState(() => new Date().toISOString().split("T")[0]);
+  const [partySize, setPartySize] = useState(2);
+
+  // Availability state
+  const [tables, setTables] = useState([]);
+  const [availableSlots, setAvailableSlots] = useState([]);
+  const [isLoadingAvailability, setIsLoadingAvailability] = useState(false);
+  const [availabilityError, setAvailabilityError] = useState(null);
+
+  // Selection
+  const [selectedTable, setSelectedTable] = useState(null);
+  const [selectedSlot, setSelectedSlot] = useState("");
+
+  // Guest details form
+  const [guest, setGuest] = useState({
+    name: "",
+    email: "",
+    phone: "",
+    specialRequests: ""
+  });
+  const [formErrors, setFormErrors] = useState({});
+
+  // Submission state
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState(null);
+  const [confirmation, setConfirmation] = useState(null);
+
+  const abortControllerRef = useRef(null);
+
+  // Reset modal state on open/close
+  useEffect(() => {
+    if (isOpen) {
+      setStep(1);
+      setSelectedTable(null);
+      setSelectedSlot("");
+      setSubmitError(null);
+      setConfirmation(null);
+      fetchAvailabilityData();
+    } else {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    }
+  }, [isOpen, restaurant?.id]);
+
+  // Re-fetch availability when date or partySize changes
+  useEffect(() => {
+    if (isOpen && restaurant?.id) {
+      setSelectedTable(null);
+      fetchAvailabilityData();
+    }
+  }, [date, partySize]);
+
+  async function fetchAvailabilityData() {
+    if (!restaurant) return;
+
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    abortControllerRef.current = new AbortController();
+
+    setIsLoadingAvailability(true);
+    setAvailabilityError(null);
+
+    try {
+      const response = await getRestaurantAvailability(
+        restaurant.id,
+        { date, partySize },
+        {
+          signal: abortControllerRef.current.signal,
+          simulateDelay: simulateDelay ? 2000 : null,
+          simulateError,
+          clientType
+        }
+      );
+
+      if (onRequestCompleted) {
+        onRequestCompleted(response.client);
+      }
+
+      const resData = response.data;
+      setTables(resData.tables || []);
+      setAvailableSlots(resData.availableSlots || []);
+
+      // Auto-select first available table if appropriate
+      const firstAvail = (resData.tables || []).find((t) => t.isAvailable);
+      if (firstAvail) {
+        setSelectedTable(firstAvail);
+      }
+
+      // Auto-select first slot
+      if (resData.availableSlots && resData.availableSlots.length > 0) {
+        setSelectedSlot(resData.availableSlots[0]);
+      }
+
+      dispatch(updateDraft({
+        date,
+        guests: partySize,
+        restaurantName: restaurant.name,
+        selectedTable: firstAvail || null,
+        timeSlot: resData.availableSlots?.[0] || ""
+      }));
+    } catch (err) {
+      if (err.isAborted || err.name === "AbortError") {
+        return; // Normal cancellation
+      }
+      setAvailabilityError(err);
+    } finally {
+      setIsLoadingAvailability(false);
+    }
+  }
+
+  function validateGuestForm() {
+    const errors = {};
+    if (!guest.name.trim()) errors.name = "Guest name is required.";
+    if (!guest.email.trim()) {
+      errors.email = "Email address is required.";
+    } else if (!/\S+@\S+\.\S+/.test(guest.email)) {
+      errors.email = "Please enter a valid email address.";
+    }
+    if (!guest.phone.trim()) {
+      errors.phone = "Phone number is required.";
+    } else if (guest.phone.replace(/\D/g, "").length < 7) {
+      errors.phone = "Please provide a valid contact number.";
+    }
+    setFormErrors(errors);
+    return Object.keys(errors).length === 0;
+  }
+
+  async function handleSubmitReservation(e) {
+    e.preventDefault();
+    if (!validateGuestForm()) return;
+
+    setIsSubmitting(true);
+    setSubmitError(null);
+
+    const payload = {
+      restaurantId: restaurant.id,
+      restaurantName: restaurant.name,
+      restaurantAddress: restaurant.address,
+      date,
+      timeSlot: selectedSlot,
+      tableId: selectedTable?.id || "T1",
+      tableNumber: selectedTable?.number || 1,
+      tableType: selectedTable?.type || "Standard Table",
+      partySize,
+      customerName: guest.name,
+      customerEmail: guest.email,
+      customerPhone: guest.phone,
+      specialRequests: guest.specialRequests,
+      apiClientUsed: clientType
+    };
+
+    try {
+      const response = await createReservation(payload, {
+        simulateDelay: simulateDelay ? 2000 : null,
+        simulateError,
+        clientType
+      });
+
+      if (onRequestCompleted) {
+        onRequestCompleted(response.client);
+      }
+
+      dispatch(saveToStore(response.data.data));
+      setConfirmation(response.data.data);
+      setStep(3); // Success step
+    } catch (err) {
+      setSubmitError(err);
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  if (!isOpen || !restaurant) return null;
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-dialog" onClick={(e) => e.stopPropagation()}>
+        {/* Modal Header */}
+        <div className="modal-header">
+          <div>
+            <h2 className="modal-title">Table Reservation &bull; {restaurant.name}</h2>
+            <div className="modal-subtitle">
+              <span>{restaurant.cuisine} Cuisine</span> &bull; <span>{restaurant.location}</span> &bull;{" "}
+              <span className="client-indicator">Active API Client: {clientType.toUpperCase()}</span>
+            </div>
+          </div>
+          <button className="modal-close-btn" onClick={onClose} title="Close">
+            <X size={20} />
+          </button>
+        </div>
+
+        {/* Progress Stepper */}
+        {step < 3 && (
+          <div className="modal-stepper">
+            <div className={`step-item ${step === 1 ? "current" : "completed"}`}>
+              <span className="step-number">{step > 1 ? <Check size={14} /> : "1"}</span>
+              <span className="step-label">Table &amp; Time Slot</span>
+            </div>
+            <div className="step-divider"></div>
+            <div className={`step-item ${step === 2 ? "current" : ""}`}>
+              <span className="step-number">2</span>
+              <span className="step-label">Guest Details</span>
+            </div>
+          </div>
+        )}
+
+        {/* Modal Body */}
+        <div className="modal-body">
+          {/* STEP 1: Date, Party Size, Table, Time Slot Selection */}
+          {step === 1 && (
+            <div className="booking-step-1">
+              {/* Filter controls row */}
+              <div className="booking-criteria-row">
+                <div className="criteria-field">
+                  <label>
+                    <Calendar size={14} /> Select Date:
+                  </label>
+                  <input
+                    type="date"
+                    className="modal-input"
+                    value={date}
+                    min={new Date().toISOString().split("T")[0]}
+                    onChange={(e) => setDate(e.target.value)}
+                  />
+                </div>
+
+                <div className="criteria-field">
+                  <label>
+                    <Users size={14} /> Party Size:
+                  </label>
+                  <select
+                    className="modal-select"
+                    value={partySize}
+                    onChange={(e) => setPartySize(parseInt(e.target.value, 10))}
+                  >
+                    {[1, 2, 3, 4, 5, 6, 8, 10].map((num) => (
+                      <option key={num} value={num}>
+                        {num} {num === 1 ? "Guest" : "Guests"}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Error banner if fetching availability failed */}
+              {availabilityError && (
+                <div className="modal-alert modal-error">
+                  <AlertCircle size={18} />
+                  <div className="alert-text">
+                    <strong>Failed to fetch real-time availability:</strong> {availabilityError.message}
+                  </div>
+                  <button className="btn-alert-action" onClick={fetchAvailabilityData}>
+                    <RefreshCw size={14} /> Retry
+                  </button>
+                </div>
+              )}
+
+              {/* Loading indicator */}
+              {isLoadingAvailability ? (
+                <div className="modal-loading-state">
+                  <div className="spinner"></div>
+                  <p>Querying REST API for available tables and time slots via {clientType.toUpperCase()}...</p>
+                </div>
+              ) : (
+                <>
+                  {/* Tables Layout */}
+                  <div className="section-block">
+                    <div className="section-header">
+                      <h4 className="section-title">
+                        <Armchair size={16} /> Available Restaurant Tables
+                      </h4>
+                      <span className="section-meta">
+                        Showing tables for {partySize} guests on {date}
+                      </span>
+                    </div>
+
+                    <div className="tables-selection-grid">
+                      {tables.map((table) => {
+                        const isSelected = selectedTable?.id === table.id;
+                        const isClickable = table.isAvailable && table.capacitySufficient;
+
+                        return (
+                          <div
+                            key={table.id}
+                            className={`table-card ${isSelected ? "selected" : ""} ${
+                              !isClickable ? "disabled" : ""
+                            }`}
+                            onClick={() => isClickable && setSelectedTable(table)}
+                          >
+                            <div className="table-top">
+                              <span className="table-number">Table #{table.number}</span>
+                              <span className={`status-pill ${table.isAvailable ? "avail" : "booked"}`}>
+                                {table.isAvailable ? "Available" : "Reserved"}
+                              </span>
+                            </div>
+                            <div className="table-type">{table.type}</div>
+                            <div className="table-capacity">
+                              <Users size={12} /> Seats up to {table.capacity}
+                            </div>
+                            {isSelected && (
+                              <div className="selected-tag">
+                                <CheckCircle size={14} /> Selected
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Time Slots */}
+                  <div className="section-block">
+                    <div className="section-header">
+                      <h4 className="section-title">
+                        <Clock size={16} /> Select Reservation Time
+                      </h4>
+                      <span className="section-meta">Available dining slots</span>
+                    </div>
+
+                    <div className="time-slots-container">
+                      {availableSlots.map((slot) => (
+                        <button
+                          key={slot}
+                          type="button"
+                          className={`slot-chip ${selectedSlot === slot ? "selected" : ""}`}
+                          onClick={() => setSelectedSlot(slot)}
+                        >
+                          <Clock size={13} />
+                          <span>{slot}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* STEP 2: Guest Details Form */}
+          {step === 2 && (
+            <form onSubmit={handleSubmitReservation} className="booking-step-2">
+              <div className="summary-banner">
+                <div className="summary-title">Reservation Summary</div>
+                <div className="summary-grid">
+                  <div>
+                    <strong>Date:</strong> {date}
+                  </div>
+                  <div>
+                    <strong>Time:</strong> {selectedSlot}
+                  </div>
+                  <div>
+                    <strong>Party:</strong> {partySize} {partySize === 1 ? "Guest" : "Guests"}
+                  </div>
+                  <div>
+                    <strong>Table:</strong> Table #{selectedTable?.number} ({selectedTable?.type})
+                  </div>
+                </div>
+              </div>
+
+              {submitError && (
+                <div className="modal-alert modal-error">
+                  <AlertCircle size={18} />
+                  <div className="alert-text">
+                    <strong>Reservation Submission Failed:</strong> {submitError.message}
+                  </div>
+                </div>
+              )}
+
+              <div className="form-grid">
+                <div className="form-field">
+                  <label>
+                    <User size={14} /> Full Name *
+                  </label>
+                  <input
+                    type="text"
+                    className={`form-input ${formErrors.name ? "has-error" : ""}`}
+                    placeholder="e.g. John Doe"
+                    value={guest.name}
+                    onChange={(e) => setGuest({ ...guest, name: e.target.value })}
+                  />
+                  {formErrors.name && <span className="field-error">{formErrors.name}</span>}
+                </div>
+
+                <div className="form-field">
+                  <label>
+                    <Mail size={14} /> Email Address *
+                  </label>
+                  <input
+                    type="email"
+                    className={`form-input ${formErrors.email ? "has-error" : ""}`}
+                    placeholder="e.g. john@example.com"
+                    value={guest.email}
+                    onChange={(e) => setGuest({ ...guest, email: e.target.value })}
+                  />
+                  {formErrors.email && <span className="field-error">{formErrors.email}</span>}
+                </div>
+
+                <div className="form-field full-width">
+                  <label>
+                    <Phone size={14} /> Phone Number *
+                  </label>
+                  <input
+                    type="tel"
+                    className={`form-input ${formErrors.phone ? "has-error" : ""}`}
+                    placeholder="e.g. (555) 123-4567"
+                    value={guest.phone}
+                    onChange={(e) => setGuest({ ...guest, phone: e.target.value })}
+                  />
+                  {formErrors.phone && <span className="field-error">{formErrors.phone}</span>}
+                </div>
+
+                <div className="form-field full-width">
+                  <label>
+                    <MessageSquare size={14} /> Dietary or Special Requests (Optional)
+                  </label>
+                  <textarea
+                    className="form-textarea"
+                    placeholder="e.g. Birthday celebration, vegetarian preferences, window seating request..."
+                    value={guest.specialRequests}
+                    onChange={(e) => setGuest({ ...guest, specialRequests: e.target.value })}
+                    rows={3}
+                  />
+                </div>
+              </div>
+
+              <div className="modal-footer-actions">
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => setStep(1)}
+                  disabled={isSubmitting}
+                >
+                  <ArrowLeft size={16} /> Back to Tables
+                </button>
+                <button
+                  type="submit"
+                  className="btn-primary"
+                  disabled={isSubmitting}
+                >
+                  {isSubmitting ? (
+                    <>
+                      <div className="btn-spinner"></div>
+                      <span>Submitting via {clientType.toUpperCase()}...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>Confirm Table Booking</span>
+                      <ArrowRight size={16} />
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          )}
+
+          {/* STEP 3: Booking Confirmation Voucher */}
+          {step === 3 && confirmation && (
+            <div className="booking-step-3">
+              <div className="confirmation-card">
+                <div className="conf-icon-wrapper">
+                  <CheckCircle size={48} className="conf-check-icon" />
+                </div>
+                <h3 className="conf-title">Reservation Confirmed!</h3>
+                <p className="conf-subtitle">
+                  Your table reservation has been recorded in the REST backend.
+                </p>
+
+                <div className="conf-code-badge">
+                  <span>Confirmation Code:</span>
+                  <strong>{confirmation.confirmationCode}</strong>
+                </div>
+
+                <div className="conf-details-box">
+                  <div className="conf-row">
+                    <span>Restaurant:</span>
+                    <strong>{confirmation.restaurantName}</strong>
+                  </div>
+                  <div className="conf-row">
+                    <span>Date &amp; Time:</span>
+                    <strong>
+                      {confirmation.date} at {confirmation.timeSlot}
+                    </strong>
+                  </div>
+                  <div className="conf-row">
+                    <span>Table Assigned:</span>
+                    <strong>
+                      Table #{confirmation.tableNumber} ({confirmation.tableType})
+                    </strong>
+                  </div>
+                  <div className="conf-row">
+                    <span>Party Size:</span>
+                    <strong>{confirmation.partySize} Guests</strong>
+                  </div>
+                  <div className="conf-row">
+                    <span>Guest:</span>
+                    <strong>
+                      {confirmation.customerName} ({confirmation.customerPhone})
+                    </strong>
+                  </div>
+                  <div className="conf-row">
+                    <span>API Transport:</span>
+                    <strong className="badge-tech">{confirmation.apiClientUsed?.toUpperCase()} REST POST</strong>
+                  </div>
+                </div>
+
+                <div className="conf-actions">
+                  <button className="btn-primary" onClick={onClose}>
+                    Done &amp; Close
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Modal Footer for Step 1 */}
+        {step === 1 && (
+          <div className="modal-footer">
+            <div className="selected-summary-preview">
+              {selectedTable && selectedSlot ? (
+                <span>
+                  Table #{selectedTable.number} &bull; {selectedSlot} &bull; {partySize} Guests
+                </span>
+              ) : (
+                <span className="hint-text">Please pick a table and time slot</span>
+              )}
+            </div>
+            <div className="footer-btns">
+              <button className="btn-secondary" onClick={onClose}>
+                Cancel
+              </button>
+              <button
+                className="btn-primary"
+                disabled={!selectedTable || !selectedSlot || isLoadingAvailability}
+                onClick={() => setStep(2)}
+              >
+                <span>Continue to Guest Details</span>
+                <ArrowRight size={16} />
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+================================================================================
+// FILE: src/components/MyBookingsModal.jsx
+================================================================================
+
+import React, { useState, useEffect } from "react";
+import { useSelector, useDispatch } from "react-redux";
+import { setConfirmedReservations, cancelReservation } from "../store/reservationSlice.js";
+import { getReservations, deleteReservation } from "../services/api.js";
+import {
+  X,
+  Calendar,
+  Clock,
+  Users,
+  Utensils,
+  Trash2,
+  Edit3,
+  CalendarX,
+  RefreshCw,
+  AlertCircle
+} from "lucide-react";
+
+export function MyBookingsModal({ isOpen, onClose, onOpenEdit, clientType }) {
+  const dispatch = useDispatch();
+  const reservations = useSelector((state) => state.reservation.confirmedReservations || []);
+
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [deletingId, setDeletingId] = useState(null);
+
+  // Requirement e: Retrieve reservation history using GET
+  const fetchHistory = async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const res = await getReservations({}, { clientType });
+      dispatch(setConfirmedReservations(res.data.data || []));
+    } catch (err) {
+      setError(err.message || "Failed to load reservation history from REST API.");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isOpen) {
+      fetchHistory();
+    }
+  }, [isOpen]);
+
+  // Requirement d: Cancel a reservation using DELETE
+  const handleDelete = async (id) => {
+    setDeletingId(id);
+    try {
+      await deleteReservation(id, { clientType });
+      dispatch(cancelReservation(id));
+    } catch (err) {
+      alert("Failed to cancel reservation via DELETE: " + err.message);
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-dialog" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 680 }}>
+        <div className="modal-header">
+          <div>
+            <h3 className="modal-title">My Table Reservations</h3>
+            <div className="modal-subtitle">
+              <span>REST CRUD: GET history &bull; PUT edit &bull; DELETE cancel</span> &bull; <strong style={{ color: "var(--primary)" }}>{clientType.toUpperCase()}</strong>
+            </div>
+          </div>
+          <button className="modal-close-btn" onClick={onClose} title="Close">
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="modal-body" style={{ maxHeight: "65vh" }}>
+          {/* Error handling */}
+          {error && (
+            <div className="modal-alert modal-error" style={{ marginBottom: "1rem" }}>
+              <AlertCircle size={16} />
+              <span>{error}</span>
+              <button className="btn-alert-action" onClick={fetchHistory}>
+                <RefreshCw size={13} /> Retry
+              </button>
+            </div>
+          )}
+
+          {/* Loading state */}
+          {isLoading ? (
+            <div className="modal-loading-state" style={{ padding: "3rem 1rem" }}>
+              <div className="spinner"></div>
+              <p>Fetching reservation history via GET /api/reservations ({clientType.toUpperCase()})...</p>
+            </div>
+          ) : reservations.length === 0 ? (
+            /* Requirement f: Display appropriate empty state */
+            <div className="empty-state" style={{ margin: "1rem auto", padding: "2.5rem 1rem" }}>
+              <CalendarX size={44} className="empty-icon" style={{ color: "#94a3b8" }} />
+              <h4 className="empty-title">No Reservations Found</h4>
+              <p className="empty-text">
+                No active bookings in the REST database. Reserve a table to begin!
+              </p>
+              <button className="btn-primary" onClick={onClose}>
+                Explore Restaurants
+              </button>
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ fontSize: "0.85rem", color: "var(--text-muted)" }}>
+                  Showing <strong>{reservations.length}</strong> booking(s) &bull; GET 200 OK
+                </span>
+                <button
+                  onClick={fetchHistory}
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    color: "var(--primary)",
+                    fontSize: "0.8rem",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "0.3rem",
+                    fontWeight: 700
+                  }}
+                >
+                  <RefreshCw size={13} /> Refresh List
+                </button>
+              </div>
+
+              {reservations.map((res) => (
+                <div
+                  key={res.id}
+                  style={{
+                    background: "var(--bg-card)",
+                    border: "1.5px solid var(--border)",
+                    borderRadius: "var(--radius-md)",
+                    padding: "1rem",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "0.6rem"
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "0.5rem", flexWrap: "wrap" }}>
+                    <div>
+                      <h4 style={{ margin: 0, fontSize: "1.05rem", fontWeight: 700 }}>
+                        {res.restaurantName}
+                      </h4>
+                      <div style={{ display: "flex", gap: "0.4rem", marginTop: "0.25rem" }}>
+                        <span
+                          style={{
+                            fontSize: "0.72rem",
+                            fontWeight: 700,
+                            color: "var(--primary)",
+                            background: "var(--primary-light)",
+                            padding: "0.15rem 0.5rem",
+                            borderRadius: "4px"
+                          }}
+                        >
+                          Code: {res.confirmationCode}
+                        </span>
+                        {res.updatedAt && (
+                          <span
+                            style={{
+                              fontSize: "0.7rem",
+                              fontWeight: 600,
+                              color: "#0284c7",
+                              background: "#e0f2fe",
+                              padding: "0.15rem 0.45rem",
+                              borderRadius: "4px"
+                            }}
+                          >
+                            Edited (PUT)
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Actions: PUT (Modify) and DELETE (Cancel) */}
+                    <div style={{ display: "flex", gap: "0.4rem" }}>
+                      <button
+                        onClick={() => onOpenEdit(res)}
+                        style={{
+                          background: "#e0f2fe",
+                          border: "none",
+                          color: "#0369a1",
+                          padding: "0.35rem 0.65rem",
+                          borderRadius: "var(--radius-sm)",
+                          fontSize: "0.78rem",
+                          fontWeight: 700,
+                          cursor: "pointer",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "0.25rem"
+                        }}
+                        title="Modify reservation details (PUT)"
+                      >
+                        <Edit3 size={13} /> Edit (PUT)
+                      </button>
+
+                      <button
+                        onClick={() => handleDelete(res.id)}
+                        disabled={deletingId === res.id}
+                        style={{
+                          background: "#fee2e2",
+                          border: "none",
+                          color: "#b91c1c",
+                          padding: "0.35rem 0.65rem",
+                          borderRadius: "var(--radius-sm)",
+                          fontSize: "0.78rem",
+                          fontWeight: 700,
+                          cursor: "pointer",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "0.25rem",
+                          opacity: deletingId === res.id ? 0.6 : 1
+                        }}
+                        title="Cancel reservation (DELETE)"
+                      >
+                        <Trash2 size={13} /> {deletingId === res.id ? "Cancelling..." : "Cancel (DELETE)"}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))",
+                      gap: "0.5rem",
+                      fontSize: "0.82rem",
+                      color: "var(--text-muted)",
+                      background: "var(--bg-subtle)",
+                      padding: "0.6rem 0.75rem",
+                      borderRadius: "6px"
+                    }}
+                  >
+                    <div><Calendar size={13} style={{ verticalAlign: -2 }} /> {res.date}</div>
+                    <div><Clock size={13} style={{ verticalAlign: -2 }} /> {res.timeSlot}</div>
+                    <div><Users size={13} style={{ verticalAlign: -2 }} /> {res.partySize} Guests</div>
+                    <div><Utensils size={13} style={{ verticalAlign: -2 }} /> Table #{res.tableNumber} ({res.tableType || "Standard"})</div>
+                  </div>
+
+                  {res.specialRequests && (
+                    <div style={{ fontSize: "0.78rem", color: "var(--text-muted)", fontStyle: "italic" }}>
+                      &ldquo;{res.specialRequests}&rdquo;
+                    </div>
+                  )}
+
+                  {res.customerName && (
+                    <div style={{ fontSize: "0.78rem", color: "var(--text-subtle)" }}>
+                      Guest: <strong>{res.customerName}</strong> ({res.customerPhone || res.customerEmail || "N/A"})
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="modal-footer">
+          <div style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
+            Full CRUD: <code style={{ background: "#f1f5f9", padding: "2px 4px", borderRadius: 4 }}>GET &bull; POST &bull; PUT &bull; DELETE</code>
+          </div>
+          <button className="btn-primary" onClick={onClose}>
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+================================================================================
+// FILE: src/components/EditReservationModal.jsx
+================================================================================
+
+import React, { useState, useEffect } from "react";
+import { useDispatch } from "react-redux";
+import { updateReservationInState } from "../store/reservationSlice.js";
+import { updateReservation } from "../services/api.js";
+import { X, Calendar, Clock, Users, MessageSquare, Phone, Save, AlertCircle } from "lucide-react";
+
+export function EditReservationModal({ reservation, isOpen, onClose, clientType }) {
+  const dispatch = useDispatch();
+
+  const [date, setDate] = useState("");
+  const [timeSlot, setTimeSlot] = useState("");
+  const [partySize, setPartySize] = useState(2);
+  const [customerPhone, setCustomerPhone] = useState("");
+  const [specialRequests, setSpecialRequests] = useState("");
+
+  const [isUpdating, setIsUpdating] = useState(false);
+  const [updateError, setUpdateError] = useState(null);
+
+  useEffect(() => {
+    if (reservation) {
+      setDate(reservation.date || "");
+      setTimeSlot(reservation.timeSlot || "7:00 PM");
+      setPartySize(reservation.partySize || 2);
+      setCustomerPhone(reservation.customerPhone || "");
+      setSpecialRequests(reservation.specialRequests || "");
+      setUpdateError(null);
+    }
+  }, [reservation]);
+
+  if (!isOpen || !reservation) return null;
+
+  const handleUpdate = async (e) => {
+    e.preventDefault();
+    setIsUpdating(true);
+    setUpdateError(null);
+
+    const payload = {
+      date,
+      timeSlot,
+      partySize: parseInt(partySize, 10),
+      customerPhone,
+      specialRequests
+    };
+
+    try {
+      // HTTP PUT /api/reservations/:id (Requirement c)
+      const res = await updateReservation(reservation.id, payload, { clientType });
+      const updated = res.data.data;
+      dispatch(updateReservationInState(updated));
+      onClose();
+    } catch (err) {
+      setUpdateError(err.message || "Failed to update reservation via PUT request.");
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-dialog" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 540 }}>
+        <div className="modal-header">
+          <div>
+            <h3 className="modal-title">Modify Reservation</h3>
+            <div className="modal-subtitle">
+              <span>{reservation.restaurantName}</span> &bull; <span>Code: {reservation.confirmationCode}</span> &bull; <strong style={{ color: "var(--primary)" }}>PUT 200 OK</strong>
+            </div>
+          </div>
+          <button className="modal-close-btn" onClick={onClose} title="Close">
+            <X size={20} />
+          </button>
+        </div>
+
+        <form onSubmit={handleUpdate}>
+          <div className="modal-body" style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+            {updateError && (
+              <div className="modal-alert modal-error">
+                <AlertCircle size={16} />
+                <span>{updateError}</span>
+              </div>
+            )}
+
+            <div className="form-grid">
+              <div className="form-field">
+                <label><Calendar size={13} /> Reservation Date</label>
+                <input
+                  type="date"
+                  className="form-input"
+                  value={date}
+                  min={new Date().toISOString().split("T")[0]}
+                  onChange={(e) => setDate(e.target.value)}
+                  required
+                />
+              </div>
+
+              <div className="form-field">
+                <label><Clock size={13} /> Time Slot</label>
+                <select
+                  className="modal-select"
+                  value={timeSlot}
+                  onChange={(e) => setTimeSlot(e.target.value)}
+                >
+                  {["12:00 PM", "12:30 PM", "1:00 PM", "1:30 PM", "5:30 PM", "6:00 PM", "6:30 PM", "7:00 PM", "7:30 PM", "8:00 PM", "8:30 PM", "9:00 PM"].map((s) => (
+                    <option key={s} value={s}>{s}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="form-field">
+                <label><Users size={13} /> Party Size</label>
+                <select
+                  className="modal-select"
+                  value={partySize}
+                  onChange={(e) => setPartySize(e.target.value)}
+                >
+                  {[1, 2, 3, 4, 5, 6, 8, 10].map((n) => (
+                    <option key={n} value={n}>{n} Guests</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="form-field">
+                <label><Phone size={13} /> Contact Phone</label>
+                <input
+                  type="tel"
+                  className="form-input"
+                  value={customerPhone}
+                  onChange={(e) => setCustomerPhone(e.target.value)}
+                  placeholder="(555) 000-0000"
+                />
+              </div>
+
+              <div className="form-field full-width">
+                <label><MessageSquare size={13} /> Special Requests / Dietary</label>
+                <textarea
+                  className="form-textarea"
+                  value={specialRequests}
+                  onChange={(e) => setSpecialRequests(e.target.value)}
+                  rows={2}
+                  placeholder="e.g. Anniversary table, quiet area..."
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="modal-footer">
+            <button type="button" className="btn-secondary" onClick={onClose} disabled={isUpdating}>
+              Cancel
+            </button>
+            <button type="submit" className="btn-primary" disabled={isUpdating}>
+              {isUpdating ? (
+                <>
+                  <div className="btn-spinner"></div>
+                  <span>Updating (PUT)...</span>
+                </>
+              ) : (
+                <>
+                  <Save size={15} />
+                  <span>Save Changes</span>
+                </>
+              )}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+
+================================================================================
+// FILE: src/components/MiddlewareMonitor.jsx
+================================================================================
+
+import React, { useState } from "react";
+import { useSelector } from "react-redux";
+import { Activity, ChevronDown, ChevronUp, Terminal } from "lucide-react";
+
+export function MiddlewareMonitor() {
+  const [isOpen, setIsOpen] = useState(false);
+  const actionLogs = useSelector((state) => state.reservation.actionLogs);
+
+  return (
+    <aside
+      style={{
+        position: "fixed",
+        bottom: "1rem",
+        right: "1.5rem",
+        zIndex: 45,
+        width: isOpen ? "380px" : "auto",
+        maxWidth: "calc(100vw - 2rem)",
+        background: "var(--bg-card)",
+        border: "1.5px solid var(--border)",
+        borderRadius: "var(--radius-lg)",
+        boxShadow: "var(--shadow-xl)",
+        overflow: "hidden",
+        transition: "all 0.25s ease"
+      }}
+    >
+      {/* Header bar */}
+      <button
+        onClick={() => setIsOpen((prev) => !prev)}
+        style={{
+          width: "100%",
+          padding: "0.65rem 1rem",
+          background: "linear-gradient(135deg, #1e293b, #0f172a)",
+          color: "white",
+          border: "none",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          cursor: "pointer",
+          gap: "0.75rem"
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+          <Activity size={16} color="#f97316" />
+          <span style={{ fontSize: "0.82rem", fontWeight: 700 }}>Redux Middleware Monitor</span>
+          <span
+            style={{
+              fontSize: "0.7rem",
+              background: "#ea580c",
+              color: "white",
+              padding: "0.1rem 0.45rem",
+              borderRadius: "9999px",
+              fontWeight: 800
+            }}
+          >
+            {actionLogs.length}
+          </span>
+        </div>
+        {isOpen ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
+      </button>
+
+      {/* Expanded Logs Panel */}
+      {isOpen && (
+        <div style={{ padding: "0.75rem", maxHeight: "260px", overflowY: "auto", background: "#0f172a", color: "#f8fafc" }}>
+          <div style={{ fontSize: "0.72rem", color: "#94a3b8", marginBottom: "0.5rem", display: "flex", alignItems: "center", gap: "0.3rem" }}>
+            <Terminal size={12} />
+            <span>Intercepted via <code>reservationActionMonitorMiddleware</code>:</span>
+          </div>
+
+          {actionLogs.length === 0 ? (
+            <div style={{ fontSize: "0.78rem", color: "#64748b", padding: "1rem 0", textAlign: "center" }}>
+              No actions dispatched yet. Try selecting a restaurant or table!
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem" }}>
+              {actionLogs.map((log) => (
+                <div
+                  key={log.id}
+                  style={{
+                    background: "#1e293b",
+                    padding: "0.45rem 0.65rem",
+                    borderRadius: "4px",
+                    borderLeft: "3px solid #ea580c",
+                    fontSize: "0.75rem"
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", color: "#cbd5e1" }}>
+                    <strong style={{ color: "#38bdf8" }}>{log.type}</strong>
+                    <span style={{ color: "#94a3b8", fontSize: "0.68rem" }}>{log.time}</span>
+                  </div>
+                  <div style={{ color: "#94a3b8", fontSize: "0.7rem", marginTop: "2px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    payload: {log.payloadSummary}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </aside>
+  );
+}
+
+
+================================================================================
+// FILE: src/components/ErrorMessage.jsx
+================================================================================
+
+import React from "react";
+import { ServerCrash, RefreshCw } from "lucide-react";
+export function ErrorMessage({ error, onRetry, title = "API Request Failed" }) {
+  if (!error) return null;
+  return (
+    <div className="error-banner">
+      <div className="error-icon-wrapper"><ServerCrash size={28} /></div>
+      <div className="error-content"><h4 className="error-title">{title}</h4><p className="error-text">{error.message || "Failed to communicate with REST API."}</p>{error.status && <span className="error-badge">Status: {error.status} ({error.client})</span>}</div>
+      {onRetry && <button className="btn-retry" onClick={onRetry}><RefreshCw size={14} /> Retry</button>}
+    </div>
+  );
+}
+
+
+================================================================================
+// FILE: src/components/LoadingSkeleton.jsx
+================================================================================
+
+import React from "react";
+export function LoadingSkeleton({ count = 6 }) {
+  return (
+    <div className="restaurant-grid">
+      {Array.from({ length: count }).map((_, i) => (
+        <div key={i} className="restaurant-card skeleton-card">
+          <div className="skeleton skeleton-img" /><div className="card-content"><div className="skeleton skeleton-title" /><div className="skeleton skeleton-desc" /><div className="skeleton-footer"><div className="skeleton skeleton-badge" /><div className="skeleton skeleton-btn" /></div></div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+
+================================================================================
+// FILE: src/App.jsx
+================================================================================
+
+import React, { useState, useEffect, useRef, useCallback } from "react";
+import { useDispatch } from "react-redux";
+import { setSelectedRestaurant as setStoreSelectedRestaurant } from "./store/reservationSlice.js";
+import { Navbar } from "./components/Navbar.jsx";
+import { SearchFilterBar } from "./components/SearchFilterBar.jsx";
+import { RestaurantCard } from "./components/RestaurantCard.jsx";
+import { LoadingSkeleton } from "./components/LoadingSkeleton.jsx";
+import { ErrorMessage } from "./components/ErrorMessage.jsx";
+import { ReservationModal } from "./components/ReservationModal.jsx";
+import { MyBookingsModal } from "./components/MyBookingsModal.jsx";
+import { EditReservationModal } from "./components/EditReservationModal.jsx";
+import { MiddlewareMonitor } from "./components/MiddlewareMonitor.jsx";
+import { getRestaurants } from "./services/api.js";
+import { RESTAURANTS_DATA } from "./data/mockRestaurants.js";
+import { Sparkles, Frown } from "lucide-react";
+
+export function App() {
+  const dispatch = useDispatch();
+
+  // REST API Client selection ('axios' | 'fetch')
+  const [clientType, setClientType] = useState("axios");
+
+  // Simulation toggles for testing loading & error handling
+  const [simulateDelay, setSimulateDelay] = useState(false);
+  const [simulateError, setSimulateError] = useState(false);
+
+  // Request counter & tracking
+  const [requestStats, setRequestStats] = useState({
+    count: 0,
+    lastClient: "Axios Client"
+  });
+
+  // Filter state
+  const [filters, setFilters] = useState({
+    search: "",
+    cuisine: "All Cuisines",
+    location: "All Locations",
+    minRating: 0,
+    priceLevel: "all"
+  });
+
+  // Restaurant data state
+  const [restaurants, setRestaurants] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  // Modal dialog states
+  const [selectedRestaurant, setSelectedRestaurant] = useState(null);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isBookingsOpen, setIsBookingsOpen] = useState(false);
+  const [editingReservation, setEditingReservation] = useState(null);
+
+  // AbortController reference to cancel in-flight requests on rapid filter changes
+  const abortControllerRef = useRef(null);
+
+  // Fetch restaurants from REST API (GET /api/restaurants)
+  const fetchRestaurantsData = useCallback(async () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    abortControllerRef.current = new AbortController();
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const response = await getRestaurants(
+        {
+          search: filters.search,
+          cuisine: filters.cuisine,
+          location: filters.location,
+          minRating: filters.minRating > 0 ? filters.minRating : undefined,
+          priceLevel: filters.priceLevel !== "all" ? filters.priceLevel : undefined
+        },
+        {
+          signal: abortControllerRef.current.signal,
+          simulateDelay: simulateDelay ? 2000 : null,
+          simulateError,
+          clientType
+        }
+      );
+
+      setRestaurants(response.data.data || []);
+      setRequestStats((prev) => ({
+        count: prev.count + 1,
+        lastClient: response.client
+      }));
+    } catch (err) {
+      if (err.isAborted || err.name === "AbortError") {
+        return;
+      }
+      setError(err);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [filters, simulateDelay, simulateError, clientType]);
+
+  useEffect(() => {
+    fetchRestaurantsData();
+
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
+  }, [fetchRestaurantsData]);
+
+  const handleFilterChange = (key, value) => {
+    setFilters((prev) => ({
+      ...prev,
+      [key]: value
+    }));
+  };
+
+  const handleResetFilters = () => {
+    setFilters({
+      search: "",
+      cuisine: "All Cuisines",
+      location: "All Locations",
+      minRating: 0,
+      priceLevel: "all"
+    });
+  };
+
+  // Open booking modal (POST)
+  const handleOpenBooking = (restaurant) => {
+    dispatch(setStoreSelectedRestaurant(restaurant));
+    setSelectedRestaurant(restaurant);
+    setIsModalOpen(true);
+  };
+
+  const handleCloseBooking = () => {
+    setIsModalOpen(false);
+    setSelectedRestaurant(null);
+  };
+
+  const handleRequestCompleted = (client) => {
+    setRequestStats((prev) => ({
+      count: prev.count + 1,
+      lastClient: client
+    }));
+  };
+
+  return (
+    <div className="app-container">
+      {/* Top Navigation */}
+      <Navbar
+        clientType={clientType}
+        onClientTypeChange={(type) => setClientType(type)}
+        simulateDelay={simulateDelay}
+        onToggleSimulateDelay={() => setSimulateDelay((prev) => !prev)}
+        simulateError={simulateError}
+        onToggleSimulateError={() => setSimulateError((prev) => !prev)}
+        requestStats={requestStats}
+        onOpenBookings={() => setIsBookingsOpen(true)}
+      />
+
+      <main className="main-content">
+        {/* Hero Section */}
+        <section className="hero-section">
+          <div className="hero-badge">
+            <Sparkles size={14} />
+            <span>Exp 3: Full Restaurant Reservation CRUD Operations (GET, POST, PUT, DELETE)</span>
+          </div>
+          <h1 className="hero-title">
+            Reserve &amp; Manage Your Dining Reservations
+          </h1>
+          <p className="hero-subtitle">
+            Complete RESTful lifecycle powered by <strong>Axios &amp; Fetch</strong>: retrieve listings (<strong>GET</strong>),
+            create reservations (<strong>POST</strong>), modify bookings (<strong>PUT</strong>), and cancel reservations (<strong>DELETE</strong>).
+          </p>
+        </section>
+
+        {/* Search & Filter Bar */}
+        <SearchFilterBar
+          filters={filters}
+          onFilterChange={handleFilterChange}
+          onResetFilters={handleResetFilters}
+          totalResults={restaurants.length}
+          totalAvailable={RESTAURANTS_DATA.length}
+          isSearching={isLoading}
+        />
+
+        {/* Results Section */}
+        <section className="results-section">
+          {error && (
+            <ErrorMessage
+              error={error}
+              onRetry={fetchRestaurantsData}
+              title="Error Loading Restaurants"
+            />
+          )}
+
+          {isLoading ? (
+            <LoadingSkeleton count={6} />
+          ) : !error && restaurants.length === 0 ? (
+            <div className="empty-state">
+              <Frown size={48} className="empty-icon" />
+              <h3 className="empty-title">No Matching Restaurants Found</h3>
+              <p className="empty-text">
+                We couldn't find any restaurants matching your current search or filter combination.
+              </p>
+              <button className="btn-primary" onClick={handleResetFilters}>
+                Clear All Filters
+              </button>
+            </div>
+          ) : (
+            <div className="restaurant-grid">
+              {restaurants.map((restaurant) => (
+                <RestaurantCard
+                  key={restaurant.id}
+                  restaurant={restaurant}
+                  onSelectForBooking={handleOpenBooking}
+                />
+              ))}
+            </div>
+          )}
+        </section>
+      </main>
+
+      {/* Reservation Booking Modal (POST) */}
+      <ReservationModal
+        restaurant={selectedRestaurant}
+        isOpen={isModalOpen}
+        onClose={handleCloseBooking}
+        clientType={clientType}
+        simulateDelay={simulateDelay}
+        simulateError={simulateError}
+        onRequestCompleted={handleRequestCompleted}
+      />
+
+      {/* My Bookings History Modal (GET & DELETE) */}
+      <MyBookingsModal
+        isOpen={isBookingsOpen}
+        onClose={() => setIsBookingsOpen(false)}
+        onOpenEdit={(res) => setEditingReservation(res)}
+        clientType={clientType}
+      />
+
+      {/* Modify Reservation Modal (PUT) */}
+      <EditReservationModal
+        reservation={editingReservation}
+        isOpen={!!editingReservation}
+        onClose={() => setEditingReservation(null)}
+        clientType={clientType}
+      />
+
+      {/* Real-time Redux Action Monitoring Middleware Panel */}
+      <MiddlewareMonitor />
+
+      {/* Footer */}
+      <footer className="app-footer">
+        <div className="footer-content">
+          <p>
+            <strong>Scenario 5 &bull; Experiment 3:</strong> Restaurant Reservation CRUD Operations
+          </p>
+          <p className="footer-sub">
+            Demonstrates GET (History/Tables), POST (Create), PUT (Modify), and DELETE (Cancel) with Axios &amp; Fetch API.
+          </p>
+        </div>
+      </footer>
+    </div>
+  );
+}
+
+export default App;
+
+
+================================================================================
+// FILE: src/main.jsx
+================================================================================
+
+import React from "react";
+import ReactDOM from "react-dom/client";
+import { Provider } from "react-redux";
+import store from "./store/index.js";
+import App from "./App.jsx";
+import "./index.css";
+
+ReactDOM.createRoot(document.getElementById("root")).render(
+  <React.StrictMode>
+    <Provider store={store}>
+      <App />
+    </Provider>
+  </React.StrictMode>
+);
+
+
+================================================================================
+// FILE: vite.config.js
+================================================================================
+
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+import { RESTAURANTS_DATA } from "./src/data/mockRestaurants.js";
+
+// In-memory reservations database for CRUD operations
+let reservationsDB = [
+  {
+    id: "res_init_1",
+    confirmationCode: "RES-742918",
+    createdAt: new Date(Date.now() - 86400000).toISOString(),
+    restaurantId: 1,
+    restaurantName: "Bella Italia Trattoria",
+    restaurantAddress: "142 Elm Street, Downtown Financial District",
+    date: "2026-10-25",
+    timeSlot: "7:00 PM",
+    partySize: 2,
+    tableNumber: 1,
+    tableType: "Window View",
+    customerName: "Alex Morgan",
+    customerEmail: "alex.morgan@example.com",
+    customerPhone: "(555) 234-5678",
+    specialRequests: "Anniversary dinner, window table preferred."
+  },
+  {
+    id: "res_init_2",
+    confirmationCode: "RES-918234",
+    createdAt: new Date(Date.now() - 43200000).toISOString(),
+    restaurantId: 2,
+    restaurantName: "Sakura Japanese Kaiseki & Sushi",
+    restaurantAddress: "580 Madison Ave, Midtown Center",
+    date: "2026-10-26",
+    timeSlot: "6:30 PM",
+    partySize: 4,
+    tableNumber: 3,
+    tableType: "Tatami Room",
+    customerName: "Sarah Chen",
+    customerEmail: "sarah.c@example.com",
+    customerPhone: "(555) 876-5432",
+    specialRequests: "Celebrating a business milestone."
+  }
+];
+
+function restApiPlugin() {
+  return {
+    name: "mock-rest-api",
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const parsedUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+        const pathname = parsedUrl.pathname;
+
+        if (!pathname.startsWith("/api/")) {
+          return next();
+        }
+
+        const simulateDelay = req.headers["x-simulate-delay"] || parsedUrl.searchParams.get("delay");
+        const simulateError = req.headers["x-simulate-error"] === "true" || parsedUrl.searchParams.get("error") === "true";
+        const delayMs = simulateDelay ? parseInt(simulateDelay, 10) : 300;
+
+        setTimeout(() => {
+          res.setHeader("Content-Type", "application/json");
+
+          if (simulateError) {
+            res.statusCode = 500;
+            res.end(JSON.stringify({
+              success: false,
+              status: 500,
+              message: "Simulated Server Error: Failed to process REST CRUD operation."
+            }));
+            return;
+          }
+
+          // 1. GET /api/restaurants (Retrieve restaurants)
+          if (pathname === "/api/restaurants" && req.method === "GET") {
+            const search = (parsedUrl.searchParams.get("search") || "").trim().toLowerCase();
+            const cuisine = parsedUrl.searchParams.get("cuisine") || "All Cuisines";
+            const location = parsedUrl.searchParams.get("location") || "All Locations";
+            const minRating = parseFloat(parsedUrl.searchParams.get("minRating") || "0");
+            const priceLevel = parsedUrl.searchParams.get("priceLevel");
+
+            let filtered = [...RESTAURANTS_DATA];
+            if (search) {
+              filtered = filtered.filter(r =>
+                r.name.toLowerCase().includes(search) ||
+                r.cuisine.toLowerCase().includes(search) ||
+                r.location.toLowerCase().includes(search) ||
+                r.description.toLowerCase().includes(search) ||
+                r.tags.some(t => t.toLowerCase().includes(search))
+              );
+            }
+            if (cuisine && cuisine !== "All Cuisines") {
+              filtered = filtered.filter(r => r.cuisine.toLowerCase() === cuisine.toLowerCase());
+            }
+            if (location && location !== "All Locations") {
+              filtered = filtered.filter(r => r.location.toLowerCase() === location.toLowerCase());
+            }
+            if (minRating > 0) {
+              filtered = filtered.filter(r => r.rating >= minRating);
+            }
+            if (priceLevel && priceLevel !== "all") {
+              filtered = filtered.filter(r => r.priceLevel === parseInt(priceLevel, 10));
+            }
+
+            res.statusCode = 200;
+            res.end(JSON.stringify({
+              success: true,
+              count: filtered.length,
+              timestamp: new Date().toISOString(),
+              data: filtered
+            }));
+            return;
+          }
+
+          // 2. GET /api/restaurants/:id/availability (Retrieve tables and time slots)
+          const availabilityMatch = pathname.match(/^\/api\/restaurants\/(\d+)\/availability$/);
+          if (availabilityMatch && req.method === "GET") {
+            const restaurantId = parseInt(availabilityMatch[1], 10);
+            const restaurant = RESTAURANTS_DATA.find(r => r.id === restaurantId);
+
+            if (!restaurant) {
+              res.statusCode = 404;
+              res.end(JSON.stringify({ success: false, status: 404, message: `Restaurant ID ${restaurantId} not found.` }));
+              return;
+            }
+
+            const date = parsedUrl.searchParams.get("date") || new Date().toISOString().split("T")[0];
+            const partySize = parseInt(parsedUrl.searchParams.get("partySize") || "2", 10);
+            const dateSeed = date.split("-").reduce((acc, part) => acc + parseInt(part, 10), 0);
+
+            const tablesWithDynamicStatus = restaurant.tables.map(table => {
+              const tableNumeric = parseInt(table.number, 10) || 1;
+              const isAvailable = (tableNumeric + dateSeed + partySize) % 5 !== 0 && table.capacity >= partySize;
+              return {
+                ...table,
+                isAvailable,
+                capacitySufficient: table.capacity >= partySize
+              };
+            });
+
+            const availableSlots = restaurant.timeSlots.filter((_, idx) => (idx + dateSeed) % 4 !== 0);
+
+            res.statusCode = 200;
+            res.end(JSON.stringify({
+              success: true,
+              restaurantId,
+              restaurantName: restaurant.name,
+              date,
+              partySize,
+              tables: tablesWithDynamicStatus,
+              availableSlots: availableSlots.length > 0 ? availableSlots : restaurant.timeSlots.slice(0, 3)
+            }));
+            return;
+          }
+
+          // 3. GET /api/reservations (Retrieve reservation history)
+          if (pathname === "/api/reservations" && req.method === "GET") {
+            res.statusCode = 200;
+            res.end(JSON.stringify({
+              success: true,
+              count: reservationsDB.length,
+              timestamp: new Date().toISOString(),
+              data: reservationsDB
+            }));
+            return;
+          }
+
+          // 4. POST /api/reservations (Create a reservation)
+          if (pathname === "/api/reservations" && req.method === "POST") {
+            let body = "";
+            req.on("data", chunk => { body += chunk.toString(); });
+            req.on("end", () => {
+              try {
+                const parsedBody = body ? JSON.parse(body) : {};
+                const confirmationCode = "RES-" + Math.floor(100000 + Math.random() * 900000);
+                const reservation = {
+                  id: "res_" + Date.now(),
+                  confirmationCode,
+                  createdAt: new Date().toISOString(),
+                  ...parsedBody
+                };
+
+                reservationsDB.unshift(reservation);
+
+                res.statusCode = 201;
+                res.end(JSON.stringify({
+                  success: true,
+                  message: "Reservation created successfully (POST 201 Created)",
+                  data: reservation
+                }));
+              } catch (err) {
+                res.statusCode = 400;
+                res.end(JSON.stringify({ success: false, status: 400, message: "Invalid JSON payload: " + err.message }));
+              }
+            });
+            return;
+          }
+
+          // 5. PUT or PATCH /api/reservations/:id (Modify reservation details)
+          const reservationItemMatch = pathname.match(/^\/api\/reservations\/([^/]+)$/);
+          if (reservationItemMatch && (req.method === "PUT" || req.method === "PATCH")) {
+            const reservationId = reservationItemMatch[1];
+            let body = "";
+            req.on("data", chunk => { body += chunk.toString(); });
+            req.on("end", () => {
+              try {
+                const updates = body ? JSON.parse(body) : {};
+                const index = reservationsDB.findIndex(r => r.id === reservationId);
+
+                if (index === -1) {
+                  res.statusCode = 404;
+                  res.end(JSON.stringify({ success: false, status: 404, message: `Reservation ${reservationId} not found.` }));
+                  return;
+                }
+
+                reservationsDB[index] = {
+                  ...reservationsDB[index],
+                  ...updates,
+                  updatedAt: new Date().toISOString()
+                };
+
+                res.statusCode = 200;
+                res.end(JSON.stringify({
+                  success: true,
+                  message: `Reservation ${reservationId} updated successfully (PUT 200 OK)`,
+                  data: reservationsDB[index]
+                }));
+              } catch (err) {
+                res.statusCode = 400;
+                res.end(JSON.stringify({ success: false, status: 400, message: "Invalid update payload: " + err.message }));
+              }
+            });
+            return;
+          }
+
+          // 6. DELETE /api/reservations/:id (Cancel a reservation)
+          if (reservationItemMatch && req.method === "DELETE") {
+            const reservationId = reservationItemMatch[1];
+            const index = reservationsDB.findIndex(r => r.id === reservationId);
+
+            if (index === -1) {
+              res.statusCode = 404;
+              res.end(JSON.stringify({ success: false, status: 404, message: `Reservation ${reservationId} not found.` }));
+              return;
+            }
+
+            const removed = reservationsDB.splice(index, 1)[0];
+            res.statusCode = 200;
+            res.end(JSON.stringify({
+              success: true,
+              message: `Reservation ${reservationId} cancelled successfully (DELETE 200 OK)`,
+              data: removed
+            }));
+            return;
+          }
+
+          // Fallback 404
+          res.statusCode = 404;
+          res.end(JSON.stringify({ success: false, status: 404, message: `Endpoint ${pathname} not found.` }));
+        }, delayMs);
+      });
+    }
+  };
+}
+
+export default defineConfig({
+  plugins: [react(), restApiPlugin()],
+  server: {
+    port: 5173,
+    host: true
+  }
+});
+
+
+================================================================================
+// FILE: package.json
+================================================================================
+
+{
+  "name": "restaurant-table-booking-2",
+  "version": "1.0.0",
+  "description": "Restaurant table booking application (Project 2)",
+  "main": "index.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix"
+  },
+  "keywords": [],
+  "type": "module",
+  "dependencies": {
+    "@reduxjs/toolkit": "^2.13.0",
+    "axios": "^1.7.9",
+    "lucide-react": "^1.16.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-redux": "^9.3.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "eslint": "^10.13.0",
+    "globals": "^17.13.0",
+    "vite": "^6.0.0"
+  }
+}
+
+

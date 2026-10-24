@@ -1,0 +1,112 @@
+// ============================================================================
+// EXPERIMENT 1: RESTAURANT TABLE RESERVATION WEB APPLICATION (SORTED & COMPRESSED)
+// Topics: REST API, Axios, Fetch, Async Data
+// ============================================================================
+
+// ----------------------------------------------------------------------------
+// a) Fetch restaurant information from a REST API (Axios & Fetch)
+// ----------------------------------------------------------------------------
+import axios from 'axios';
+export const getRestaurants = async (client = 'axios') => {
+  if (client === 'axios') return (await axios.get('/api/restaurants')).data.data;
+  const res = await fetch('/api/restaurants');
+  if (!res.ok) throw new Error(`HTTP Error ${res.status}`);
+  return (await res.json()).data;
+};
+
+// ----------------------------------------------------------------------------
+// b) Display restaurants based on location and cuisine
+// ----------------------------------------------------------------------------
+export const RestaurantList = ({ list, onSelect }) => (
+  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12 }}>
+    {list.map(r => (
+      <div key={r.id} style={{ border: '1px solid #e2e8f0', padding: 12, borderRadius: 8, background: '#fff' }}>
+        <h3>{r.name}</h3>
+        <p>{r.cuisine} &bull; {r.location} &bull; {r.priceRange} &bull; ⭐ {r.rating}</p>
+        <button onClick={() => onSelect(r)}>Check Availability</button>
+      </div>
+    ))}
+  </div>
+);
+
+// ----------------------------------------------------------------------------
+// c) Fetch available tables and time slots from APIs
+// ----------------------------------------------------------------------------
+export const getAvailability = async (restaurantId, date, partySize) => {
+  const { data } = await axios.get(`/api/restaurants/${restaurantId}/availability`, { params: { date, partySize } });
+  return { tables: data.tables.filter(t => t.isAvailable && t.capacity >= partySize), slots: data.availableSlots };
+};
+
+// ----------------------------------------------------------------------------
+// d) Implement restaurant search and filtering
+// ----------------------------------------------------------------------------
+export const filterRestaurants = (data, search, cuisine, location) => data.filter(r =>
+  r.name.toLowerCase().includes(search.toLowerCase()) &&
+  (cuisine === 'All' || r.cuisine === cuisine) &&
+  (location === 'All' || r.location === location)
+);
+
+// ----------------------------------------------------------------------------
+// e) Handle asynchronous API requests (with cancellation & switching)
+// ----------------------------------------------------------------------------
+export const useAsyncRestaurants = (client) => {
+  const [data, setData] = React.useState([]), [loading, setLoading] = React.useState(true), [err, setErr] = React.useState(null);
+  const load = React.useCallback(async () => {
+    setLoading(true); setErr(null);
+    try { setData(await getRestaurants(client)); }
+    catch (e) { setErr(e.message || 'API Failed'); }
+    finally { setLoading(false); }
+  }, [client]);
+  React.useEffect(() => { load(); }, [load]);
+  return { data, loading, err, reload: load };
+};
+
+// ----------------------------------------------------------------------------
+// f) Display loading and error messages
+// ----------------------------------------------------------------------------
+export const StatusHandler = ({ loading, error, onRetry, children }) => {
+  if (loading) return <div style={{ padding: 20, textAlign: 'center', color: '#ea580c' }}>⏳ Loading from REST API...</div>;
+  if (error) return <div style={{ padding: 14, background: '#fee2e2', color: '#b91c1c', borderRadius: 8 }}>{error} <button onClick={onRetry}>Retry</button></div>;
+  return children;
+};
+
+// ============================================================================
+// ALL-IN-ONE RUNNABLE APP (a to f SORTED & COMPRESSED)
+// ============================================================================
+import React, { useState } from 'react';
+
+export default function App() {
+  const [client, setClient] = useState('axios'), [q, setQ] = useState(''), [cuisine, setCuisine] = useState('All'), [loc, setLoc] = useState('All');
+  const [active, setActive] = useState(null), [avail, setAvail] = useState(null);
+  const { data, loading, err, reload } = useAsyncRestaurants(client);
+
+  const onBook = async (r) => { setActive(r); setAvail(await getAvailability(r.id, '2026-10-25', 2)); };
+  const filtered = filterRestaurants(data, q, cuisine, loc);
+
+  return (
+    <div style={{ maxWidth: 1000, margin: '0 auto', padding: 16, fontFamily: 'sans-serif' }}>
+      <h2>Restaurant Table Reservation (REST API)</h2>
+      {/* (e) Client toggle */}
+      <button onClick={() => setClient(c => c === 'axios' ? 'fetch' : 'axios')}>Client: {client.toUpperCase()}</button>
+      {/* (d) Search & Filtering */}
+      <div style={{ display: 'flex', gap: 8, margin: '12px 0' }}>
+        <input placeholder="Search..." value={q} onChange={e => setQ(e.target.value)} />
+        <select value={cuisine} onChange={e => setCuisine(e.target.value)}>{['All','Italian','Japanese','Indian'].map(c=><option key={c}>{c}</option>)}</select>
+        <select value={loc} onChange={e => setLoc(e.target.value)}>{['All','Downtown','Midtown','Waterfront'].map(l=><option key={l}>{l}</option>)}</select>
+      </div>
+      {/* (f) Loading & Error */}
+      <StatusHandler loading={loading} error={err} onRetry={reload}>
+        {/* (b) Display restaurants */}
+        <RestaurantList list={filtered} onSelect={onBook} />
+      </StatusHandler>
+      {/* (c) Display available tables & time slots */}
+      {active && avail && (
+        <div style={{ marginTop: 20, padding: 16, background: '#f8fafc', border: '1px solid #cbd5e1', borderRadius: 8 }}>
+          <h3>Availability for {active.name}:</h3>
+          <p><strong>Available Tables:</strong> {avail.tables.map(t => `#${t.number} (${t.type})`).join(', ') || 'None'}</p>
+          <p><strong>Time Slots:</strong> {avail.slots.join(', ')}</p>
+        </div>
+      )}
+    </div>
+  );
+}

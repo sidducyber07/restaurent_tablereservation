@@ -1,0 +1,161 @@
+// ============================================================================
+// 10-LINE SHORTENED & COMPRESSED FILES (EXPERIMENT 1: RESTAURANT RESERVATION)
+// ============================================================================
+
+// ----------------------------------------------------------------------------
+// FILE 1: src/services/api.js (10 Lines)
+// ----------------------------------------------------------------------------
+import { fetchClient } from "./fetchClient.js";
+import { axiosClient } from "./axiosClient.js";
+let client = "axios";
+export const setClientType = (t) => { client = t; };
+const getClient = (opt) => (opt?.clientType || client) === "fetch" ? fetchClient : axiosClient;
+export const getRestaurants = (params = {}, opt = {}) => getClient(opt).get("/restaurants", { params, ...opt });
+export const getRestaurantById = (id, opt = {}) => getClient(opt).get(`/restaurants/${id}`, opt);
+export const getRestaurantAvailability = (id, params = {}, opt = {}) => getClient(opt).get(`/restaurants/${id}/availability`, { params, ...opt });
+export const createReservation = (data, opt = {}) => getClient(opt).post("/reservations", data, opt);
+export default { getRestaurants, getRestaurantById, getRestaurantAvailability, createReservation };
+
+// ----------------------------------------------------------------------------
+// FILE 2: src/services/fetchClient.js (10 Lines)
+// ----------------------------------------------------------------------------
+const BASE = "/api";
+export const fetchClient = {
+  async request(url, { method = "GET", params, body, signal, simulateError, simulateDelay } = {}) {
+    const q = params ? "?" + new URLSearchParams(Object.entries(params).filter(([,v]) => v)).toString() : "";
+    const headers = { "Accept": "application/json", ...(body && { "Content-Type": "application/json" }), ...(simulateDelay && { "x-simulate-delay": String(simulateDelay) }), ...(simulateError && { "x-simulate-error": "true" }) };
+    const res = await fetch(`${BASE}${url}${q}`, { method, headers, signal, body: body ? JSON.stringify(body) : null });
+    if (!res.ok) { const err = new Error((await res.json().catch(() => ({}))).message || `HTTP ${res.status}`); err.status = res.status; err.client = "Fetch API"; throw err; }
+    return { data: await res.json(), status: res.status, client: "Fetch API" };
+  },
+  get(url, opt) { return this.request(url, { ...opt, method: "GET" }); },
+  post(url, body, opt) { return this.request(url, { ...opt, method: "POST", body }); }
+};
+
+// ----------------------------------------------------------------------------
+// FILE 3: src/services/axiosClient.js (10 Lines)
+// ----------------------------------------------------------------------------
+import axios from "axios";
+const api = axios.create({ baseURL: "/api", timeout: 10000 });
+const wrap = async (fn, endpoint, opt = {}, body = null) => {
+  const { params, signal, simulateError, simulateDelay } = opt;
+  const headers = { ...(simulateDelay && { "x-simulate-delay": String(simulateDelay) }), ...(simulateError && { "x-simulate-error": "true" }) };
+  try {
+    const res = body ? await api.post(endpoint, body, { headers, signal }) : await api.get(endpoint, { params, headers, signal });
+    return { data: res.data, status: res.status, client: "Axios Client" };
+  } catch (err) { const e = new Error(err.response?.data?.message || err.message); e.status = err.response?.status || 500; e.client = "Axios Client"; throw e; }
+};
+export const axiosClient = { get: (u, o) => wrap(api.get, u, o), post: (u, b, o) => wrap(api.post, u, o, b) };
+
+// ----------------------------------------------------------------------------
+// FILE 4: src/App.jsx (10 Lines)
+// ----------------------------------------------------------------------------
+import React, { useState, useEffect } from "react";
+import { Navbar } from "./components/Navbar.jsx"; import { SearchFilterBar } from "./components/SearchFilterBar.jsx";
+import { RestaurantCard } from "./components/RestaurantCard.jsx"; import { LoadingSkeleton } from "./components/LoadingSkeleton.jsx";
+import { ErrorMessage } from "./components/ErrorMessage.jsx"; import { ReservationModal } from "./components/ReservationModal.jsx";
+import { getRestaurants } from "./services/api.js";
+export default function App() {
+  const [cType, setCType] = useState("axios"), [sim, setSim] = useState({ delay: false, err: false }), [q, setQ] = useState({ search: "", cuisine: "All Cuisines", location: "All Locations" }), [data, setData] = useState([]), [loading, setLoading] = useState(true), [err, setErr] = useState(null), [book, setBook] = useState(null);
+  const load = () => { setLoading(true); setErr(null); getRestaurants(q, { clientType: cType, simulateDelay: sim.delay ? 2000 : null, simulateError: sim.err }).then(r => setData(r.data.data)).catch(setErr).finally(() => setLoading(false)); };
+  useEffect(() => { load(); }, [q, cType, sim]);
+  return (<div className="app-container"><Navbar clientType={cType} onClientTypeChange={setCType} simulateDelay={sim.delay} onToggleSimulateDelay={() => setSim(s => ({ ...s, delay: !s.delay }))} simulateError={sim.err} onToggleSimulateError={() => setSim(s => ({ ...s, err: !s.err }))} /><main className="main-content"><SearchFilterBar filters={q} onFilterChange={(k, v) => setQ(p => ({ ...p, [k]: v }))} onResetFilters={() => setQ({ search: "", cuisine: "All Cuisines", location: "All Locations" })} totalResults={data.length} isSearching={loading} />{err && <ErrorMessage error={err} onRetry={load} />}{loading ? <LoadingSkeleton count={6} /> : <div className="restaurant-grid">{data.map(r => <RestaurantCard key={r.id} restaurant={r} onSelectForBooking={setBook} />)}</div>}</main><ReservationModal restaurant={book} isOpen={!!book} onClose={() => setBook(null)} clientType={cType} /></div>);
+}
+
+// ----------------------------------------------------------------------------
+// FILE 5: src/components/SearchFilterBar.jsx (10 Lines)
+// ----------------------------------------------------------------------------
+import React from "react";
+import { Search, X } from "lucide-react";
+import { CUISINES_LIST, LOCATIONS_LIST } from "../data/mockRestaurants.js";
+export function SearchFilterBar({ filters, onFilterChange, onResetFilters, totalResults }) {
+  return (
+    <section className="search-filter-section"><div className="search-filter-card">
+      <div className="search-input-wrapper"><Search size={18} className="search-icon" /><input className="search-input" placeholder="Search by name, cuisine, area..." value={filters.search} onChange={e => onFilterChange("search", e.target.value)} />{filters.search && <button className="search-clear-btn" onClick={() => onFilterChange("search", "")}><X size={14} /></button>}</div>
+      <div className="filters-grid"><select className="filter-select" value={filters.cuisine} onChange={e => onFilterChange("cuisine", e.target.value)}>{CUISINES_LIST.map(c => <option key={c}>{c}</option>)}</select><select className="filter-select" value={filters.location} onChange={e => onFilterChange("location", e.target.value)}>{LOCATIONS_LIST.map(l => <option key={l}>{l}</option>)}</select></div>
+      <div className="filter-footer"><span>Found <strong>{totalResults}</strong> restaurants</span><button className="btn-reset-filters" onClick={onResetFilters}><X size={12} /> Reset</button></div>
+    </div></section>
+  );
+}
+
+// ----------------------------------------------------------------------------
+// FILE 6: src/components/RestaurantCard.jsx (10 Lines)
+// ----------------------------------------------------------------------------
+import React from "react";
+import { Star, MapPin, CalendarDays } from "lucide-react";
+export function RestaurantCard({ restaurant: r, onSelectForBooking }) {
+  return (
+    <article className="restaurant-card">
+      <div className="card-image-container"><img src={r.image} alt={r.name} className="card-image" /><div className="card-badge-row"><span className="badge-cuisine">{r.cuisine}</span><span className="badge-price">{r.priceRange}</span></div></div>
+      <div className="card-content">
+        <div className="card-header-row"><h3 className="restaurant-name">{r.name}</h3><span className="rating-badge"><Star size={13} fill="#f59e0b" color="#f59e0b" /> {r.rating} ({r.reviewsCount})</span></div>
+        <div className="meta-item"><MapPin size={13} /> {r.location} &bull; {r.address}</div>
+        <p className="restaurant-desc">{r.description}</p>
+        <div className="card-footer"><span className="tables-info">{r.tables?.length || 6} Tables</span><button className="btn-reserve" onClick={() => onSelectForBooking(r)}><CalendarDays size={14} /> Reserve Table</button></div>
+      </div>
+    </article>
+  );
+}
+
+// ----------------------------------------------------------------------------
+// FILE 7: src/components/ReservationModal.jsx (10 Lines)
+// ----------------------------------------------------------------------------
+import React, { useState, useEffect } from "react";
+import { X, CheckCircle, ArrowRight } from "lucide-react";
+import { getRestaurantAvailability, createReservation } from "../services/api.js";
+export function ReservationModal({ restaurant: r, isOpen, onClose, clientType }) {
+  const [date, setDate] = useState(() => new Date().toISOString().split("T")[0]), [size, setSize] = useState(2), [tables, setTables] = useState([]), [slots, setSlots] = useState([]), [selT, setSelT] = useState(null), [selS, setSelS] = useState(""), [conf, setConf] = useState(null), [loading, setLoading] = useState(false);
+  useEffect(() => { if (isOpen && r) { setLoading(true); getRestaurantAvailability(r.id, { date, partySize: size }, { clientType }).then(res => { setTables(res.data.tables); setSlots(res.data.availableSlots); setSelT(res.data.tables.find(t=>t.isAvailable)); setSelS(res.data.availableSlots[0]); }).finally(() => setLoading(false)); } }, [isOpen, date, size, r]);
+  const book = () => { createReservation({ restaurantId: r.id, date, timeSlot: selS, tableNumber: selT?.number, partySize: size, customerName: "Guest User" }, { clientType }).then(res => setConf(res.data.data)); };
+  if (!isOpen || !r) return null;
+  return (<div className="modal-backdrop" onClick={onClose}><div className="modal-dialog" onClick={e => e.stopPropagation()}><div className="modal-header"><h3>Reserve @ {r.name}</h3><button className="modal-close-btn" onClick={onClose}><X size={18} /></button></div><div className="modal-body">{conf ? <div className="confirmation-card"><CheckCircle size={40} color="#10b981" /><h4>Booking Confirmed: {conf.confirmationCode}</h4><p>{conf.date} at {conf.timeSlot} &bull; Table #{conf.tableNumber}</p><button className="btn-primary" onClick={onClose}>Done</button></div> : <div><div className="booking-criteria-row"><input type="date" className="modal-input" value={date} onChange={e=>setDate(e.target.value)} /><select className="modal-select" value={size} onChange={e=>setSize(+e.target.value)}>{[2,4,6,8].map(n=><option key={n} value={n}>{n} Guests</option>)}</select></div>{loading ? <p>Loading availability...</p> : <><div className="tables-selection-grid">{tables.map(t => <button key={t.id} disabled={!t.isAvailable} className={`table-card ${selT?.id===t.id?'selected':''}`} onClick={()=>setSelT(t)}>Table #{t.number} ({t.type})</button>)}</div><div className="time-slots-container">{slots.map(s => <button key={s} className={`slot-chip ${selS===s?'selected':''}`} onClick={()=>setSelS(s)}>{s}</button>)}</div></>}</div>}</div><div className="modal-footer"><button className="btn-secondary" onClick={onClose}>Close</button><button className="btn-primary" disabled={!selT || !selS || loading || conf} onClick={book}>Confirm Booking <ArrowRight size={14} /></button></div></div></div>);
+}
+
+// ----------------------------------------------------------------------------
+// FILE 8: src/components/ErrorMessage.jsx (10 Lines)
+// ----------------------------------------------------------------------------
+import React from "react";
+import { ServerCrash, RefreshCw } from "lucide-react";
+export function ErrorMessage({ error, onRetry, title = "API Request Failed" }) {
+  if (!error) return null;
+  return (
+    <div className="error-banner">
+      <div className="error-icon-wrapper"><ServerCrash size={28} /></div>
+      <div className="error-content"><h4 className="error-title">{title}</h4><p className="error-text">{error.message || "Failed to communicate with REST API."}</p>{error.status && <span className="error-badge">Status: {error.status} ({error.client})</span>}</div>
+      {onRetry && <button className="btn-retry" onClick={onRetry}><RefreshCw size={14} /> Retry</button>}
+    </div>
+  );
+}
+
+// ----------------------------------------------------------------------------
+// FILE 9: src/components/LoadingSkeleton.jsx (10 Lines)
+// ----------------------------------------------------------------------------
+import React from "react";
+export function LoadingSkeleton({ count = 6 }) {
+  return (
+    <div className="restaurant-grid">
+      {Array.from({ length: count }).map((_, i) => (
+        <div key={i} className="restaurant-card skeleton-card">
+          <div className="skeleton skeleton-img" /><div className="card-content"><div className="skeleton skeleton-title" /><div className="skeleton skeleton-desc" /><div className="skeleton-footer"><div className="skeleton skeleton-badge" /><div className="skeleton skeleton-btn" /></div></div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ----------------------------------------------------------------------------
+// FILE 10: src/components/Navbar.jsx (10 Lines)
+// ----------------------------------------------------------------------------
+import React from "react";
+import { Utensils, Zap, Clock, AlertTriangle } from "lucide-react";
+export function Navbar({ clientType, onClientTypeChange, simulateDelay, onToggleSimulateDelay, simulateError, onToggleSimulateError }) {
+  return (
+    <header className="navbar"><div className="navbar-container">
+      <div className="navbar-brand"><div className="brand-icon"><Utensils size={20} /></div><div><div className="brand-name">GourmetReserve</div><div className="brand-subtitle">Exp 1: REST APIs (Axios &amp; Fetch)</div></div></div>
+      <div className="navbar-controls">
+        <div className="segmented-toggle"><button className={`toggle-btn ${clientType==='axios'?'active':''}`} onClick={()=>onClientTypeChange('axios')}><Zap size={13}/> Axios</button><button className={`toggle-btn ${clientType==='fetch'?'active':''}`} onClick={()=>onClientTypeChange('fetch')}><Zap size={13}/> Fetch</button></div>
+        <div className="simulation-controls"><button className={`sim-btn ${simulateDelay?'active-delay':''}`} onClick={onToggleSimulateDelay}><Clock size={13}/> {simulateDelay ? "2s Delay ON" : "Sim Delay"}</button><button className={`sim-btn ${simulateError?'active-error':''}`} onClick={onToggleSimulateError}><AlertTriangle size={13}/> {simulateError ? "Error 500 ON" : "Sim Error"}</button></div>
+      </div>
+    </div></header>
+  );
+}

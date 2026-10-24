@@ -1,0 +1,75 @@
+// ============================================================================
+// EXPERIMENT 2: RESTAURANT RESERVATION STATE MANAGEMENT (REDUX TOOLKIT & MIDDLEWARE)
+// ============================================================================
+
+// ----------------------------------------------------------------------------
+// a) Create a global reservation store
+// ----------------------------------------------------------------------------
+import { configureStore } from '@reduxjs/toolkit';
+import reservationReducer from './reservationSlice.js';
+import { actionMonitorMiddleware, storageSyncMiddleware } from './middleware.js';
+export const store = configureStore({
+  reducer: { reservation: reservationReducer },
+  middleware: (g) => g({ serializableCheck: false }).concat(actionMonitorMiddleware, storageSyncMiddleware)
+});
+
+// ----------------------------------------------------------------------------
+// b) Manage selected restaurant, date, time, guests, and table
+// ----------------------------------------------------------------------------
+const initialReservationState = {
+  selectedRestaurant: null,
+  draft: { date: new Date().toISOString().split('T')[0], timeSlot: '', guests: 2, selectedTable: null, customerName: '', customerPhone: '' },
+  confirmedReservations: JSON.parse(localStorage.getItem('gourmet_reservations') || '[]'),
+  isLoading: false, error: null, actionLogs: []
+};
+
+// ----------------------------------------------------------------------------
+// c) Implement reservation actions using Redux Toolkit
+// ----------------------------------------------------------------------------
+import { createSlice } from '@reduxjs/toolkit';
+export const reservationSlice = createSlice({
+  name: 'reservation',
+  initialState: initialReservationState,
+  reducers: {
+    setSelectedRestaurant: (state, action) => { state.selectedRestaurant = action.payload; },
+    updateDraft: (state, action) => { state.draft = { ...state.draft, ...action.payload }; },
+    confirmReservation: (state, action) => { state.confirmedReservations.unshift(action.payload); },
+    cancelReservation: (state, action) => { state.confirmedReservations = state.confirmedReservations.filter(r => r.id !== action.payload); },
+    clearAllReservations: (state) => { state.confirmedReservations = []; },
+    addLogEntry: (state, action) => { state.actionLogs.unshift(action.payload); }
+  }
+});
+export const { setSelectedRestaurant, updateDraft, confirmReservation, cancelReservation, clearAllReservations, addLogEntry } = reservationSlice.actions;
+
+// ----------------------------------------------------------------------------
+// d) Synchronize reservation data with browser storage (localStorage)
+// ----------------------------------------------------------------------------
+export const storageSyncMiddleware = (store) => (next) => (action) => {
+  const result = next(action);
+  if (['reservation/confirmReservation', 'reservation/cancelReservation', 'reservation/clearAllReservations'].includes(action.type)) {
+    const list = store.getState().reservation.confirmedReservations;
+    localStorage.setItem('gourmet_reservations', JSON.stringify(list));
+  }
+  return result;
+};
+
+// ----------------------------------------------------------------------------
+// e) Use middleware to monitor reservation actions
+// ----------------------------------------------------------------------------
+export const actionMonitorMiddleware = (store) => (next) => (action) => {
+  if (action?.type?.startsWith('reservation/') && action.type !== 'reservation/addLogEntry') {
+    const log = { id: Date.now(), type: action.type, time: new Date().toLocaleTimeString(), payload: JSON.stringify(action.payload || 'none') };
+    console.log(`[Redux Middleware] Action: ${log.type}`, log.payload);
+    setTimeout(() => store.dispatch(addLogEntry(log)), 0);
+  }
+  return next(action);
+};
+
+// ----------------------------------------------------------------------------
+// f) Display appropriate empty and loading states
+// ----------------------------------------------------------------------------
+export function BookingsStatus({ reservations, isLoading, onCancel }) {
+  if (isLoading) return <div className="loader"><p>Updating reservation state...</p></div>;
+  if (!reservations || reservations.length === 0) return <div className="empty-state"><h4>No Reservations Yet</h4><p>Book a table to see it saved here.</p></div>;
+  return (<div className="bookings-list">{reservations.map(r => (<div key={r.id} className="booking-card"><h4>{r.restaurantName} (Table #{r.tableNumber})</h4><p>{r.date} at {r.timeSlot}</p><button onClick={() => onCancel(r.id)}>Cancel</button></div>))}</div>);
+}

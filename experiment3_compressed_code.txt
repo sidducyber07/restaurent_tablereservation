@@ -1,0 +1,121 @@
+// ============================================================================
+// EXPERIMENT 3: RESTAURANT RESERVATION CRUD OPERATIONS (AXIOS & FETCH)
+// Topics: CRUD, REST API, Axios/Fetch
+// ============================================================================
+
+// ----------------------------------------------------------------------------
+// a) Retrieve restaurants and tables using GET
+// ----------------------------------------------------------------------------
+export const getRestaurants = async (params = {}) => (await axios.get('/api/restaurants', { params })).data.data;
+export const getTableAvailability = async (id, date, partySize) => 
+  (await axios.get(`/api/restaurants/${id}/availability`, { params: { date, partySize } })).data;
+
+// ----------------------------------------------------------------------------
+// b) Create a reservation using POST
+// ----------------------------------------------------------------------------
+export const createReservation = async (reservationData) => {
+  const response = await axios.post('/api/reservations', reservationData);
+  return response.data.data; // Returns newly created reservation (HTTP 201 Created)
+};
+
+// ----------------------------------------------------------------------------
+// c) Modify reservation details using PUT/PATCH
+// ----------------------------------------------------------------------------
+export const updateReservation = async (reservationId, updatedFields) => {
+  const response = await axios.put(`/api/reservations/${reservationId}`, updatedFields);
+  return response.data.data; // Returns updated reservation record (HTTP 200 OK)
+};
+
+// ----------------------------------------------------------------------------
+// d) Cancel a reservation using DELETE
+// ----------------------------------------------------------------------------
+export const deleteReservation = async (reservationId) => {
+  const response = await axios.delete(`/api/reservations/${reservationId}`);
+  return response.data; // Confirms cancellation (HTTP 200 OK)
+};
+
+// ----------------------------------------------------------------------------
+// e) Retrieve reservation history using GET
+// ----------------------------------------------------------------------------
+export const getReservationHistory = async () => {
+  const response = await fetch('/api/reservations');
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return (await response.json()).data; // Returns list of active reservations
+};
+
+// ----------------------------------------------------------------------------
+// f) Handle API loading and error states
+// ----------------------------------------------------------------------------
+export function CrudStatusHandler({ loading, error, onRetry, children }) {
+  if (loading) return <div className="loader"><span>⏳ Performing REST CRUD operation...</span></div>;
+  if (error) return <div className="error-alert"><strong>CRUD Error:</strong> {error} <button onClick={onRetry}>Retry</button></div>;
+  return children;
+}
+
+// ============================================================================
+// ALL-IN-ONE RUNNABLE CRUD COMPONENT (EXPERIMENT 3)
+// ============================================================================
+import React, { useState, useEffect } from 'react';
+import axios from 'axios';
+
+export default function ReservationCrudManager() {
+  const [history, setHistory] = useState([]), [loading, setLoading] = useState(false), [err, setErr] = useState('');
+  const [editItem, setEditItem] = useState(null), [editDate, setEditDate] = useState(''), [editGuests, setEditGuests] = useState(2);
+
+  // (e) GET history
+  const loadHistory = async () => {
+    setLoading(true); setErr('');
+    try { setHistory((await axios.get('/api/reservations')).data.data); }
+    catch (e) { setErr(e.message || 'GET failed'); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { loadHistory(); }, []);
+
+  // (b) POST create
+  const handleCreate = async () => {
+    const newRes = { restaurantId: 1, restaurantName: 'Bella Italia', date: '2026-10-30', timeSlot: '7:30 PM', partySize: 2, customerName: 'Guest' };
+    const created = (await axios.post('/api/reservations', newRes)).data.data;
+    setHistory(prev => [created, ...prev]);
+  };
+
+  // (c) PUT update
+  const handleUpdate = async (id) => {
+    const updated = (await axios.put(`/api/reservations/${id}`, { date: editDate, partySize: editGuests })).data.data;
+    setHistory(prev => prev.map(r => r.id === id ? updated : r));
+    setEditItem(null);
+  };
+
+  // (d) DELETE cancel
+  const handleDelete = async (id) => {
+    await axios.delete(`/api/reservations/${id}`);
+    setHistory(prev => prev.filter(r => r.id !== id));
+  };
+
+  return (
+    <div style={{ padding: 16, fontFamily: 'sans-serif' }}>
+      <h3>Reservation CRUD Manager</h3>
+      <button onClick={handleCreate}>+ Create Quick Booking (POST)</button>
+      {loading && <p>Loading CRUD records...</p>}
+      {err && <p style={{ color: 'red' }}>{err} <button onClick={loadHistory}>Retry</button></p>}
+      <div style={{ marginTop: 12 }}>
+        {history.map(r => (
+          <div key={r.id} style={{ border: '1px solid #ddd', padding: 10, margin: '8px 0', borderRadius: 6 }}>
+            <h4>{r.restaurantName} &bull; Code: {r.confirmationCode}</h4>
+            <p>{r.date} at {r.timeSlot} &bull; {r.partySize} Guests</p>
+            <button onClick={() => { setEditItem(r); setEditDate(r.date); setEditGuests(r.partySize); }}>Modify (PUT)</button>
+            <button onClick={() => handleDelete(r.id)} style={{ marginLeft: 8, color: 'red' }}>Cancel (DELETE)</button>
+          </div>
+        ))}
+      </div>
+      {editItem && (
+        <div style={{ background: '#e0f2fe', padding: 12, borderRadius: 8, marginTop: 12 }}>
+          <h4>Edit {editItem.confirmationCode}</h4>
+          <input type="date" value={editDate} onChange={e => setEditDate(e.target.value)} />
+          <input type="number" value={editGuests} min={1} max={10} onChange={e => setEditGuests(+e.target.value)} style={{ margin: '0 8px' }} />
+          <button onClick={() => handleUpdate(editItem.id)}>Save Changes (PUT)</button>
+          <button onClick={() => setEditItem(null)} style={{ marginLeft: 8 }}>Cancel</button>
+        </div>
+      )}
+    </div>
+  );
+}

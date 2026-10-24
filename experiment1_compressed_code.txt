@@ -1,0 +1,101 @@
+// ============================================================================
+// EXPERIMENT 1: RESTAURANT TABLE RESERVATION USING REST APIS (COMPRESSED)
+// ============================================================================
+
+// a) Fetch restaurant information from REST API (Axios & Fetch)
+const getRestaurantsAxios = async () => (await axios.get('/api/restaurants')).data;
+const getRestaurantsFetch = async () => {
+  const res = await fetch('/api/restaurants');
+  if (!res.ok) throw new Error(`HTTP Error: ${res.status}`);
+  return await res.json();
+};
+
+// b) Display restaurants based on location and cuisine
+const displayByLocationAndCuisine = (restaurants, location, cuisine) =>
+  restaurants.filter(r => 
+    (location === 'All' || r.location === location) &&
+    (cuisine === 'All' || r.cuisine === cuisine)
+  );
+
+// c) Fetch available tables and time slots from APIs
+const fetchAvailability = async (restaurantId, date, partySize) => {
+  const res = await axios.get(`/api/restaurants/${restaurantId}/availability`, { params: { date, partySize } });
+  return { tables: res.data.tables.filter(t => t.isAvailable), slots: res.data.availableSlots };
+};
+
+// d) Implement restaurant search and filtering
+const filterRestaurants = (list, query, cuisine, location) =>
+  list.filter(r =>
+    r.name.toLowerCase().includes(query.toLowerCase()) &&
+    (cuisine === 'All' || r.cuisine === cuisine) &&
+    (location === 'All' || r.location === location)
+  );
+
+// e) Handle asynchronous API requests (with cancellation & error handling)
+const loadRestaurants = async (clientType, signal) => {
+  const client = clientType === 'axios' ? axios.get : (url, opt) => fetch(url, opt).then(r => r.json());
+  return await client('/api/restaurants', { signal });
+};
+
+// f) Display loading and error messages
+const renderStatus = (loading, error, onRetry) => {
+  if (loading) return <p className="loading">Loading restaurants...</p>;
+  if (error) return <div className="error"><p>{error}</p><button onClick={onRetry}>Retry</button></div>;
+  return null;
+};
+
+// ============================================================================
+// ALL-IN-ONE ULTRA-COMPRESSED REACT COMPONENT (EXPERIMENT 1)
+// ============================================================================
+import React, { useState, useEffect } from 'react';
+import axios from 'axios';
+
+export default function MiniReservationApp() {
+  const [data, setData] = useState([]), [loading, setLoading] = useState(true), [err, setErr] = useState('');
+  const [search, setSearch] = useState(''), [cuisine, setCuisine] = useState('All'), [loc, setLoc] = useState('All');
+  const [selected, setSelected] = useState(null), [avail, setAvail] = useState(null), [client, setClient] = useState('axios');
+
+  const load = async () => {
+    setLoading(true); setErr('');
+    try {
+      const res = client === 'axios' ? (await axios.get('/api/restaurants')).data.data : (await (await fetch('/api/restaurants')).json()).data;
+      setData(res);
+    } catch (e) { setErr(e.message || 'API Failed'); } finally { setLoading(false); }
+  };
+  useEffect(() => { load(); }, [client]);
+
+  const checkAvail = async (id) => {
+    const res = (await axios.get(`/api/restaurants/${id}/availability?partySize=2`)).data;
+    setAvail(res); setSelected(id);
+  };
+
+  const list = data.filter(r => r.name.toLowerCase().includes(search.toLowerCase()) && (cuisine === 'All' || r.cuisine === cuisine) && (loc === 'All' || r.location === loc));
+
+  if (loading) return <div><h3>Loading REST Data ({client.toUpperCase()})...</h3></div>;
+  if (err) return <div><h3>Error: {err}</h3><button onClick={load}>Retry</button></div>;
+
+  return (
+    <div style={{ padding: 16, fontFamily: 'sans-serif' }}>
+      <h2>Restaurant Reservation (REST API)</h2>
+      <button onClick={() => setClient(c => c === 'axios' ? 'fetch' : 'axios')}>Client: {client.toUpperCase()}</button>
+      <input placeholder="Search..." value={search} onChange={e => setSearch(e.target.value)} style={{ margin: 8 }} />
+      <select value={cuisine} onChange={e => setCuisine(e.target.value)}>{['All','Italian','Japanese','Indian'].map(c=><option key={c}>{c}</option>)}</select>
+      <select value={loc} onChange={e => setLoc(e.target.value)}>{['All','Downtown','Midtown','Waterfront'].map(l=><option key={l}>{l}</option>)}</select>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginTop: 12 }}>
+        {list.map(r => (
+          <div key={r.id} style={{ border: '1px solid #ccc', padding: 10, borderRadius: 8 }}>
+            <h4>{r.name}</h4><p>{r.cuisine} &bull; {r.location} &bull; {r.priceRange}</p>
+            <button onClick={() => checkAvail(r.id)}>Check Tables & Slots</button>
+          </div>
+        ))}
+      </div>
+      {avail && selected && (
+        <div style={{ marginTop: 16, padding: 12, background: '#f0f9ff', borderRadius: 8 }}>
+          <h3>Available at {avail.restaurantName}:</h3>
+          <p>Tables: {avail.tables.filter(t=>t.isAvailable).map(t => `#${t.number} (${t.type})`).join(', ') || 'None'}</p>
+          <p>Time Slots: {avail.availableSlots.join(', ')}</p>
+        </div>
+      )}
+    </div>
+  );
+}
